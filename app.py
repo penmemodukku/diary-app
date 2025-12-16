@@ -1,9 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V64 (Multi-Calendar Support)
+# [시온이네 일기장] V65 (User Friendly)
 # ==========================================
-# 1. [기능] 수동 입력창에 콤마(,)로 여러 캘린더 ID 입력 가능
-# 2. [디버깅] 연결 성공 여부를 바로 알려주는 메시지 추가
-# 3. [유지] V62의 완벽한 레이아웃 + 폰트 조절 기능
+# 1. [UX] 사이드바에 '로봇 이메일' 자동 표시 (복사하기 편하게)
+# 2. [가이드] 다른 사용자를 위한 '연동 방법' 안내 문구 추가
+# 3. [유지] V62 레이아웃 + V64 멀티 캘린더 기능
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from datetime import datetime, timedelta, date, timezone
 import math
 
-# --- [1. 인증 설정] ---
+# --- [1. 인증 설정 및 로봇 정보 획득] ---
 def get_calendar_service():
     try:
         service_account_info = st.secrets["google_service_account"]
@@ -21,10 +21,12 @@ def get_calendar_service():
             service_account_info,
             scopes=['https://www.googleapis.com/auth/calendar.readonly']
         )
-        return build('calendar', 'v3', credentials=creds)
+        # 로봇 이메일 주소 추출 (화면 표시용)
+        robot_email = service_account_info.get("client_email", "알 수 없음")
+        return build('calendar', 'v3', credentials=creds), robot_email
     except Exception as e:
         st.error(f"인증 오류: Secrets 설정을 확인해주세요.\n{e}")
-        return None
+        return None, None
 
 # --- [2. 로직] ---
 KST = timezone(timedelta(hours=9))
@@ -42,7 +44,7 @@ def get_google_colors(service):
         return {}, {}
 
 def get_events_from_ids(service, target_ids, start_date, end_date):
-    if not target_ids: return {}, {}, ["❌ 캘린더를 선택하거나 ID를 입력해주세요."]
+    if not target_ids: return {}, {}, ["❌ 캘린더 ID를 입력해주세요."]
     
     cal_colors_map, event_colors_map = get_google_colors(service)
     
@@ -57,19 +59,14 @@ def get_events_from_ids(service, target_ids, start_date, end_date):
     cal_legend_info = {}
 
     for cal_id in target_ids:
-        cal_id = cal_id.strip() # 공백 제거
+        cal_id = cal_id.strip() 
         if not cal_id: continue
         
         try:
-            # 캘린더 정보 가져오기 시도 (이게 성공해야 연결된 것)
             cal_info = service.calendars().get(calendarId=cal_id).execute()
             cal_name = cal_info.get('summary', cal_id)
-            
-            # 색상 처리
-            # 캘린더 자체 색상이 없으면 기본 파랑
             cal_color_id = cal_info.get('colorId', '1') 
             default_color = cal_colors_map.get(cal_color_id, {'background': '#a4bdfc'})['background']
-            
             cal_legend_info[cal_id] = {'name': cal_name, 'color': default_color}
 
             events_result = service.events().list(
@@ -88,12 +85,12 @@ def get_events_from_ids(service, target_ids, start_date, end_date):
                     else:
                         event['real_color'] = default_color
                     all_events.append(event)
-                log_msg.append(f"✅ [{cal_name}] 연결 성공: {len(items)}개 일정")
+                log_msg.append(f"✅ [{cal_name}] : {len(items)}개")
             else:
-                log_msg.append(f"⚠️ [{cal_name}] 연결 성공: 일정 없음")
+                log_msg.append(f"⚠️ [{cal_name}] : 일정 없음")
                 
         except Exception as e:
-            log_msg.append(f"❌ [{cal_id}] 실패: 로봇에게 공유되었는지 확인해주세요.")
+            log_msg.append(f"❌ [{cal_id}] 접근 불가: 로봇에게 공유되었나요?")
             continue
 
     daily_groups = {}
@@ -178,7 +175,7 @@ def get_time_info(event):
     if not dur_str: dur_str.append("0m")
     return time_range, " ".join(dur_str)
 
-# --- [3. PDF 생성 로직] ---
+# --- [3. PDF 생성] ---
 FONT_SCALE = 1.0
 
 def get_scaled_size(pt):
@@ -356,9 +353,9 @@ st.set_page_config(page_title="시온이네 일기장", page_icon="📝", layout
 
 if 'pdf_data' not in st.session_state: st.session_state['pdf_data'] = None
 
-st.title("📝 시온이네 일기장 인쇄소 (V64)")
+st.title("📝 시온이네 일기장 인쇄소 (V65)")
 
-service = get_calendar_service()
+service, robot_email = get_calendar_service()
 
 if service:
     with st.sidebar:
@@ -369,18 +366,26 @@ if service:
         else: FONT_SCALE = 1.0
         
         st.divider()
-        st.write("아래에 캘린더 ID를 입력하세요. (여러 개는 콤마로 구분)")
-        # 캘린더 선택 체크박스는 SA에서 보통 작동안하므로 숨기거나 보조수단으로 둠
         
-        manual = st.text_area("캘린더 ID 입력 (복사 붙여넣기)", height=100, help="구글 캘린더 설정 > 캘린더 통합 > 캘린더 ID를 복사해서 넣으세요.")
+        # [NEW] 로봇 정보 표시
+        st.info(f"🤖 **이 로봇을 캘린더에 초대하세요:**")
+        st.code(robot_email, language="text")
+        st.caption("위 이메일을 복사해서 구글 캘린더 설정 > '특정 사용자와 공유'에 추가해주세요.")
+        
+        st.divider()
+        
+        manual = st.text_area(
+            "캘린더 ID 입력 (콤마로 구분)", 
+            height=100, 
+            help="구글 캘린더 설정 > 캘린더 통합 > 캘린더 ID를 복사해서 넣으세요."
+        )
         
     d = st.date_input("📅 기간 선택", [date.today(), date.today()], format="YYYY/MM/DD")
 
     if st.button("🚀 일기책 만들기", type="primary"):
-        # 콤마로 구분된 ID 처리
         ids = [x.strip() for x in manual.split(',') if x.strip()]
         
-        if not ids: st.error("캘린더 ID를 적어도 하나는 입력해주세요!")
+        if not ids: st.error("캘린더 ID를 입력해주세요!")
         elif len(d) < 2: st.error("기간을 선택해주세요!")
         else:
             with st.spinner("데이터 처리 및 PDF 생성 중..."):
@@ -401,6 +406,6 @@ if service:
                     st.success(f"완성! {total_count}개의 일기를 담았습니다.")
 
     if st.session_state['pdf_data']:
-        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary_V64.pdf")
+        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary_V65.pdf")
 else:
     st.error("인증 정보를 불러오지 못했습니다.")

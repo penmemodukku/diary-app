@@ -1,8 +1,8 @@
 # ==========================================
-# [시온이네 일기장] V66 (Bug Fix)
+# [시온이네 일기장] V67 (Missing Logic Restored)
 # ==========================================
-# 1. [Fix] create_full_pdf 함수 내 'font_config' 정의 누락 수정 (NameError 해결)
-# 2. [유지] V65의 모든 기능 (멀티 캘린더, 로봇 안내, 폰트 조절, 레이아웃)
+# 1. [Critical Fix] create_full_pdf 함수 내 누락된 'full_html' 생성 로직 복구
+# 2. [유지] V66의 기능 (폰트 조절, 멀티 캘린더, 로봇 안내, 디자인)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -20,7 +20,6 @@ def get_calendar_service():
             service_account_info,
             scopes=['https://www.googleapis.com/auth/calendar.readonly']
         )
-        # 로봇 이메일 주소 추출 (화면 표시용)
         robot_email = service_account_info.get("client_email", "알 수 없음")
         return build('calendar', 'v3', credentials=creds), robot_email
     except Exception as e:
@@ -300,7 +299,6 @@ def generate_day_html(target_date, data, cal_legend_info):
     return html
 
 def create_full_pdf(daily_data, cal_legend_info):
-    # [V66 Fix] font_config 정의 추가
     font_config = FontConfiguration()
     
     body_font = get_scaled_size(8.5)
@@ -348,6 +346,13 @@ def create_full_pdf(daily_data, cal_legend_info):
             break-inside: auto; 
         }}
     """
+    
+    # [V67] 핵심 복구: full_html 생성 로직
+    full_html = "<html><body>"
+    for d, events in sorted(daily_data.items()):
+        full_html += generate_day_html(d, events, cal_legend_info)
+    full_html += "</body></html>"
+    
     return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css_style, font_config=font_config)], font_config=font_config)
 
 # --- [4. UI] ---
@@ -355,7 +360,7 @@ st.set_page_config(page_title="시온이네 일기장", page_icon="📝", layout
 
 if 'pdf_data' not in st.session_state: st.session_state['pdf_data'] = None
 
-st.title("📝 시온이네 일기장 인쇄소 (V66)")
+st.title("📝 시온이네 일기장 인쇄소 (V67)")
 
 service, robot_email = get_calendar_service()
 
@@ -369,7 +374,6 @@ if service:
         
         st.divider()
         
-        # [NEW] 로봇 정보 표시
         st.info(f"🤖 **이 로봇을 캘린더에 초대하세요:**")
         st.code(robot_email, language="text")
         st.caption("위 이메일을 복사해서 구글 캘린더 설정 > '특정 사용자와 공유'에 추가해주세요.")
@@ -408,6 +412,6 @@ if service:
                     st.success(f"완성! {total_count}개의 일기를 담았습니다.")
 
     if st.session_state['pdf_data']:
-        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary_V66.pdf")
+        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary_V67.pdf")
 else:
     st.error("인증 정보를 불러오지 못했습니다.")

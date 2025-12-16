@@ -1,8 +1,8 @@
 # ==========================================
-# [시온이네 일기장] V67 (Missing Logic Restored)
+# [시온이네 일기장] V68 (True Color Edition)
 # ==========================================
-# 1. [Critical Fix] create_full_pdf 함수 내 누락된 'full_html' 생성 로직 복구
-# 2. [유지] V66의 기능 (폰트 조절, 멀티 캘린더, 로봇 안내, 디자인)
+# 1. [Color Fix] 입력창에 '캘린더ID | 색상' 형식 지원 (로봇이 못 보는 색상 강제 지정)
+# 2. [유지] V67의 모든 로직 (안정적인 PDF 생성, 폰트 조절 등)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -41,7 +41,8 @@ def get_google_colors(service):
     except:
         return {}, {}
 
-def get_events_from_ids(service, target_ids, start_date, end_date):
+# [V68] custom_colors 매개변수 추가
+def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date):
     if not target_ids: return {}, {}, ["❌ 캘린더 ID를 입력해주세요."]
     
     cal_colors_map, event_colors_map = get_google_colors(service)
@@ -63,8 +64,14 @@ def get_events_from_ids(service, target_ids, start_date, end_date):
         try:
             cal_info = service.calendars().get(calendarId=cal_id).execute()
             cal_name = cal_info.get('summary', cal_id)
-            cal_color_id = cal_info.get('colorId', '1') 
-            default_color = cal_colors_map.get(cal_color_id, {'background': '#a4bdfc'})['background']
+            
+            # [V68] 색상 결정 로직 변경: 수동 지정 색상 우선 -> 없으면 API 색상 -> 기본값
+            if cal_id in custom_colors:
+                default_color = custom_colors[cal_id]
+            else:
+                cal_color_id = cal_info.get('colorId', '1') 
+                default_color = cal_colors_map.get(cal_color_id, {'background': '#a4bdfc'})['background']
+            
             cal_legend_info[cal_id] = {'name': cal_name, 'color': default_color}
 
             events_result = service.events().list(
@@ -78,6 +85,8 @@ def get_events_from_ids(service, target_ids, start_date, end_date):
                     event['calendar_id'] = cal_id
                     event['calendar_name'] = cal_name
                     evt_color_id = event.get('colorId')
+                    
+                    # 이벤트 개별 색상이 있으면 그걸 쓰고, 없으면 캘린더 색상(우리가 정한 것 포함) 사용
                     if evt_color_id and evt_color_id in event_colors_map:
                         event['real_color'] = event_colors_map[evt_color_id]['background']
                     else:
@@ -347,7 +356,7 @@ def create_full_pdf(daily_data, cal_legend_info):
         }}
     """
     
-    # [V67] 핵심 복구: full_html 생성 로직
+    # [V67 복구] 핵심 루프 재확인
     full_html = "<html><body>"
     for d, events in sorted(daily_data.items()):
         full_html += generate_day_html(d, events, cal_legend_info)
@@ -360,7 +369,7 @@ st.set_page_config(page_title="시온이네 일기장", page_icon="📝", layout
 
 if 'pdf_data' not in st.session_state: st.session_state['pdf_data'] = None
 
-st.title("📝 시온이네 일기장 인쇄소 (V67)")
+st.title("📝 시온이네 일기장 인쇄소 (V68)")
 
 service, robot_email = get_calendar_service()
 
@@ -376,26 +385,52 @@ if service:
         
         st.info(f"🤖 **이 로봇을 캘린더에 초대하세요:**")
         st.code(robot_email, language="text")
-        st.caption("위 이메일을 복사해서 구글 캘린더 설정 > '특정 사용자와 공유'에 추가해주세요.")
+        st.caption("구글 캘린더 설정 > '특정 사용자와 공유'에 추가")
         
         st.divider()
         
+        st.markdown("""
+        **👇 캘린더 ID 입력 방법**
+        * 그냥 ID만 입력 (기본색)
+        * `ID | 색상` (색상 강제 지정)
+        * 콤마(,)로 여러 개 구분
+        
+        **예시:**
+        `abc@group... | #FF0000`, 
+        `xyz@group... | green`
+        """)
+        
         manual = st.text_area(
-            "캘린더 ID 입력 (콤마로 구분)", 
-            height=100, 
-            help="구글 캘린더 설정 > 캘린더 통합 > 캘린더 ID를 복사해서 넣으세요."
+            "캘린더 ID 입력", 
+            height=120, 
+            help="구글 캘린더 ID를 복사해서 넣으세요."
         )
         
     d = st.date_input("📅 기간 선택", [date.today(), date.today()], format="YYYY/MM/DD")
 
     if st.button("🚀 일기책 만들기", type="primary"):
-        ids = [x.strip() for x in manual.split(',') if x.strip()]
+        # [V68] 파이프(|)를 이용한 ID 및 색상 파싱 로직
+        raw_inputs = [x.strip() for x in manual.split(',') if x.strip()]
+        final_ids = []
+        custom_colors = {}
         
-        if not ids: st.error("캘린더 ID를 입력해주세요!")
+        for item in raw_inputs:
+            if "|" in item:
+                parts = item.split("|", 1)
+                cid = parts[0].strip()
+                color = parts[1].strip()
+                final_ids.append(cid)
+                custom_colors[cid] = color
+            else:
+                final_ids.append(item)
+        
+        if not final_ids: st.error("캘린더 ID를 입력해주세요!")
         elif len(d) < 2: st.error("기간을 선택해주세요!")
         else:
             with st.spinner("데이터 처리 및 PDF 생성 중..."):
-                daily_data, cal_legend_info, logs = get_events_from_ids(service, ids, d[0], d[1])
+                # custom_colors 전달
+                daily_data, cal_legend_info, logs = get_events_from_ids(service, final_ids, custom_colors, d[0], d[1])
+                
                 with st.expander("🔎 처리 결과 로그 (클릭해서 확인)"):
                     for log in logs:
                         if "❌" in log: st.error(log)
@@ -412,6 +447,6 @@ if service:
                     st.success(f"완성! {total_count}개의 일기를 담았습니다.")
 
     if st.session_state['pdf_data']:
-        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary_V67.pdf")
+        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary_V68.pdf")
 else:
     st.error("인증 정보를 불러오지 못했습니다.")

@@ -1,9 +1,8 @@
 # ==========================================
-# [시온이네 일기장] V65 (User Friendly)
+# [시온이네 일기장] V66 (Bug Fix)
 # ==========================================
-# 1. [UX] 사이드바에 '로봇 이메일' 자동 표시 (복사하기 편하게)
-# 2. [가이드] 다른 사용자를 위한 '연동 방법' 안내 문구 추가
-# 3. [유지] V62 레이아웃 + V64 멀티 캘린더 기능
+# 1. [Fix] create_full_pdf 함수 내 'font_config' 정의 누락 수정 (NameError 해결)
+# 2. [유지] V65의 모든 기능 (멀티 캘린더, 로봇 안내, 폰트 조절, 레이아웃)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -301,6 +300,9 @@ def generate_day_html(target_date, data, cal_legend_info):
     return html
 
 def create_full_pdf(daily_data, cal_legend_info):
+    # [V66 Fix] font_config 정의 추가
+    font_config = FontConfiguration()
+    
     body_font = get_scaled_size(8.5)
     meta_font = get_scaled_size(7.5)
     title_font = get_scaled_size(10)
@@ -353,7 +355,7 @@ st.set_page_config(page_title="시온이네 일기장", page_icon="📝", layout
 
 if 'pdf_data' not in st.session_state: st.session_state['pdf_data'] = None
 
-st.title("📝 시온이네 일기장 인쇄소 (V65)")
+st.title("📝 시온이네 일기장 인쇄소 (V66)")
 
 service, robot_email = get_calendar_service()
 
@@ -406,6 +408,6 @@ if service:
                     st.success(f"완성! {total_count}개의 일기를 담았습니다.")
 
     if st.session_state['pdf_data']:
-        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary_V65.pdf")
+        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary_V66.pdf")
 else:
     st.error("인증 정보를 불러오지 못했습니다.")

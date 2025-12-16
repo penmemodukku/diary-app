@@ -1,8 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V69 (Color Smart Fix)
+# [시온이네 일기장] V70 (Safety & Style Edition)
 # ==========================================
-# 1. [Fix] 'red', 'green' 등 영문 색상명을 입력해도 16진수(#)로 자동 변환하여 투명 배경 적용
-# 2. [유지] V68의 모든 기능 (멀티 캘린더, 로봇 안내, 폰트 조절, 레이아웃)
+# 1. [Safety] 100일 이상 선택 시 '메모리 부족 주의' 경고 메시지 표시
+# 2. [Style] 웹페이지 배경색 커스터마이징 (CSS 주입)
+# 3. [UX] 진행 상황 멘트 구체화
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -12,7 +13,42 @@ from googleapiclient.discovery import build
 from datetime import datetime, timedelta, date, timezone
 import math
 
-# --- [1. 인증 설정 및 로봇 정보 획득] ---
+# --- [0. 페이지 설정 (가장 먼저 실행)] ---
+st.set_page_config(
+    page_title="시온이네 일기장 인쇄소",
+    page_icon="📖", # 탭 아이콘 변경
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --- [1. 스타일 꾸미기 (CSS 주입)] ---
+# 배경색을 따뜻한 웜톤으로, 버튼을 좀 더 눈에 띄게
+st.markdown("""
+    <style>
+    /* 메인 배경색 변경 */
+    .stApp {
+        background-color: #FDFCF0; /* 아주 연한 아이보리색 */
+    }
+    /* 사이드바 배경색 변경 */
+    section[data-testid="stSidebar"] {
+        background-color: #F7F5E6;
+    }
+    /* 버튼 스타일 */
+    .stButton > button {
+        background-color: #FF4B4B;
+        color: white;
+        font-weight: bold;
+        border-radius: 10px;
+        border: none;
+    }
+    .stButton > button:hover {
+        background-color: #FF2B2B;
+        color: white;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- [2. 인증 설정] ---
 def get_calendar_service():
     try:
         service_account_info = st.secrets["google_service_account"]
@@ -26,12 +62,9 @@ def get_calendar_service():
         st.error(f"인증 오류: Secrets 설정을 확인해주세요.\n{e}")
         return None, None
 
-# --- [2. 색상 변환기 (NEW)] ---
+# --- [3. 색상 변환기] ---
 def normalize_color(color_input):
-    """사용자가 입력한 색상명(red)을 16진수(#FF0000)로 변환"""
     color_input = color_input.strip().lower()
-    
-    # 기본 색상 사전
     colors = {
         'red': '#FF0000', 'green': '#008000', 'blue': '#0000FF',
         'yellow': '#FFFF00', 'orange': '#FFA500', 'purple': '#800080',
@@ -41,19 +74,12 @@ def normalize_color(color_input):
         'olive': '#808000', 'maroon': '#800000', 'navy': '#000080',
         'teal': '#008080', 'silver': '#C0C0C0', 'gold': '#FFD700'
     }
-    
-    # 1. 사전에 있는 이름이면 변환
-    if color_input in colors:
-        return colors[color_input]
-    
-    # 2. #이 없지만 6자리/3자리 Hex 코드인 경우 (예: FF0000) -> # 붙여줌
+    if color_input in colors: return colors[color_input]
     if all(c in '0123456789abcdef' for c in color_input) and len(color_input) in [3, 6]:
         return f"#{color_input}"
-        
-    # 3. 이미 #으로 시작하거나 알 수 없는 경우 그대로 반환
     return color_input
 
-# --- [3. 로직] ---
+# --- [4. 로직] ---
 KST = timezone(timedelta(hours=9))
 
 def force_break_text(text):
@@ -80,7 +106,6 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
 
     all_events = []
     log_msg = []
-    
     cal_legend_info = {}
 
     for cal_id in target_ids:
@@ -91,7 +116,6 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
             cal_info = service.calendars().get(calendarId=cal_id).execute()
             cal_name = cal_info.get('summary', cal_id)
             
-            # 색상 우선순위: 수동 지정 > API 색상 > 기본값
             if cal_id in custom_colors:
                 default_color = custom_colors[cal_id]
             else:
@@ -111,7 +135,6 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
                     event['calendar_id'] = cal_id
                     event['calendar_name'] = cal_name
                     evt_color_id = event.get('colorId')
-                    
                     if evt_color_id and evt_color_id in event_colors_map:
                         event['real_color'] = event_colors_map[evt_color_id]['background']
                     else:
@@ -122,7 +145,7 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
                 log_msg.append(f"⚠️ [{cal_name}] : 일정 없음")
                 
         except Exception as e:
-            log_msg.append(f"❌ [{cal_id}] 접근 불가: 로봇에게 공유되었나요?")
+            log_msg.append(f"❌ [{cal_id}] 접근 불가: 로봇 공유 확인 필요")
             continue
 
     daily_groups = {}
@@ -207,11 +230,20 @@ def get_time_info(event):
     if not dur_str: dur_str.append("0m")
     return time_range, " ".join(dur_str)
 
-# --- [4. PDF 생성] ---
+# --- [5. PDF 생성] ---
 FONT_SCALE = 1.0
 
 def get_scaled_size(pt):
     return f"{pt * FONT_SCALE}pt"
+
+def estimate_height(desc, is_title=False):
+    if not desc: return 0
+    lines = desc.count('\\n') + 1
+    chars_per_line = 40 / FONT_SCALE 
+    lines += len(desc) / chars_per_line
+    base = 25 if is_title else 0 
+    line_height = 16 * FONT_SCALE
+    return base + (lines * line_height) + 10 
 
 def generate_day_html(target_date, data, cal_legend_info):
     allday = data['allday']
@@ -286,8 +318,6 @@ def generate_day_html(target_date, data, cal_legend_info):
             font_size = get_scaled_size(8.5)
             line_height = '1.2'
         
-        # 여기서 bg 색상 뒤에 40(Hex Alpha)을 붙임.
-        # normalize_color 덕분에 #FF000040 처럼 정상 코드가 됨
         html += f"<div class='event-block' style='top:{top_px}px; height:{item['_dur']*PIXELS_PER_MIN}px; left:{l_pct}%; width:{w_pct}%; background-color:{item['bg']}40; border-left:3px solid {item['bg']}; color:#333; font-size:{font_size}; line-height:{line_height};'><b>{item['summary']}</b></div>"
     
     html += """
@@ -380,12 +410,10 @@ def create_full_pdf(daily_data, cal_legend_info):
     
     return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css_style, font_config=font_config)], font_config=font_config)
 
-# --- [5. UI] ---
-st.set_page_config(page_title="시온이네 일기장", page_icon="📝", layout="wide")
-
+# --- [6. Main UI] ---
 if 'pdf_data' not in st.session_state: st.session_state['pdf_data'] = None
 
-st.title("📝 시온이네 일기장 인쇄소 (V69)")
+st.title("📝 시온이네 일기장 인쇄소")
 
 service, robot_email = get_calendar_service()
 
@@ -400,44 +428,44 @@ if service:
         st.divider()
         st.info(f"🤖 **이 로봇을 캘린더에 초대하세요:**")
         st.code(robot_email, language="text")
-        st.caption("위 이메일을 복사해서 구글 캘린더 설정 > '특정 사용자와 공유'에 추가해주세요.")
         
         st.divider()
-        st.markdown("""
-        **👇 캘린더 ID 입력 방법**
-        * 콤마(,)로 여러 개 구분
-        * `ID | 색상` 으로 색상 지정 가능
-        * 예: `abc@group... | red`, `xyz@group... | #00FF00`
-        """)
-        manual = st.text_area("캘린더 ID 입력", height=120)
+        st.markdown("**👇 캘린더 ID 입력** (콤마로 구분, `| 색상` 옵션)")
+        manual = st.text_area("ID 목록", height=120, help="예: abc@group... | red")
         
-    d = st.date_input("📅 기간 선택", [date.today(), date.today()], format="YYYY/MM/DD")
+    col1, col2 = st.columns(2)
+    with col1:
+        start_d = st.date_input("시작 날짜", date.today())
+    with col2:
+        end_d = st.date_input("종료 날짜", date.today())
+
+    # [Safety Warning] 100일 초과 시 경고
+    if (end_d - start_d).days > 100:
+        st.warning("⚠️ 기간이 너무 깁니다(100일 초과). 서버 메모리 부족으로 멈출 수 있습니다. 1~3개월씩 나눠서 인쇄하는 것을 추천합니다.")
 
     if st.button("🚀 일기책 만들기", type="primary"):
-        # 파이프(|)를 이용한 ID 및 색상 파싱 로직 + 색상 정규화 적용
+        # ID 파싱
         raw_inputs = [x.strip() for x in manual.split(',') if x.strip()]
         final_ids = []
         custom_colors = {}
-        
         for item in raw_inputs:
             if "|" in item:
                 parts = item.split("|", 1)
                 cid = parts[0].strip()
                 color_input = parts[1].strip()
-                # 색상 이름 -> Hex 코드로 변환
                 final_color = normalize_color(color_input)
-                
                 final_ids.append(cid)
                 custom_colors[cid] = final_color
             else:
                 final_ids.append(item)
         
         if not final_ids: st.error("캘린더 ID를 입력해주세요!")
-        elif len(d) < 2: st.error("기간을 선택해주세요!")
+        elif start_d > end_d: st.error("날짜 선택이 잘못되었습니다.")
         else:
-            with st.spinner("데이터 처리 및 PDF 생성 중..."):
-                daily_data, cal_legend_info, logs = get_events_from_ids(service, final_ids, custom_colors, d[0], d[1])
-                with st.expander("🔎 처리 결과 로그 (클릭해서 확인)"):
+            with st.spinner("🔥 열심히 굽는 중... (잠시만 기다려주세요)"):
+                daily_data, cal_legend_info, logs = get_events_from_ids(service, final_ids, custom_colors, start_d, end_d)
+                
+                with st.expander("🔎 처리 결과 로그"):
                     for log in logs:
                         if "❌" in log: st.error(log)
                         elif "⚠️" in log: st.warning(log)
@@ -450,9 +478,9 @@ if service:
                     pdf_bytes = create_full_pdf(daily_data, cal_legend_info)
                     st.session_state['pdf_data'] = pdf_bytes
                     st.balloons()
-                    st.success(f"완성! {total_count}개의 일기를 담았습니다.")
+                    st.success(f"완성! 총 {total_count}개의 일기를 담았습니다.")
 
     if st.session_state['pdf_data']:
-        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary_V69.pdf")
+        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary.pdf")
 else:
     st.error("인증 정보를 불러오지 못했습니다.")

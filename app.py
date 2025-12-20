@@ -1,9 +1,10 @@
 # ==========================================
-# [시온이네 일기장] V72 (Perfect Columns)
+# [시온이네 일기장] V73 (Layout Logic Fix)
 # ==========================================
-# 1. [Layout] 겹치는 시간표 항목을 '겹침' 없이 '칼럼' 형태로 완벽 분리
-# 2. [Visual] 박스 사이에 간격을 주어 가독성 향상
-# 3. [유지] V71의 30분 확장 로직 및 기타 기능
+# 1. [Fix] 최소 높이(30분) 확장 시, '끝나는 시간(_e)'도 함께 확장하여 레이아웃 엔진이 '겹침'을 인식하도록 수정
+#    -> 이로써 22시 항목들이 '위아래 겹침'이 아닌 '좌우 분할'로 정상 작동함.
+# 2. [Revert] V72의 '박스 간격(Gap)' 제거 -> V71처럼 꽉 찬(Tight) 디자인으로 복귀
+# 3. [유지] 기타 모든 편의 기능
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -169,59 +170,46 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
             
     return daily_groups, cal_legend_info, log_msg
 
-# [V72] Layout Engine 개선 - 겹침 없이 칼럼 분리
 def calculate_visual_layout(events):
     if not events: return []
-    # 시작 시간 기준으로 정렬
     sorted_events = sorted(events, key=lambda x: x['_s'])
-    
-    # 1. 겹치는 그룹(Cluster) 찾기
     clusters = []
     if not sorted_events: return []
-    
     current_cluster = [sorted_events[0]]
     cluster_end = sorted_events[0]['_e']
-    
     for i in range(1, len(sorted_events)):
         evt = sorted_events[i]
-        # 내 시작시간이 앞선 이벤트들의 끝나는 시간보다 빠르면 -> 겹치는 그룹
+        # [V73] _e 값이 시각적 확장에 맞춰져 있으므로, 겹침 감지가 정확해짐
         if evt['_s'] < cluster_end:
             current_cluster.append(evt)
             cluster_end = max(cluster_end, evt['_e'])
         else:
-            # 안 겹치면 그룹 확정하고 새로 시작
             clusters.append(current_cluster)
             current_cluster = [evt]
             cluster_end = evt['_e']
     clusters.append(current_cluster)
     
-    # 2. 각 그룹 내에서 Lane(칼럼) 배정하기
     final_items = []
     for cluster in clusters:
-        # 그룹 내에서도 일찍 시작하고 긴 것부터 처리
+        # [V73] 그룹 내 정렬 우선순위: 시작시간 -> (긴 시간 우선)
         cluster_sorted = sorted(cluster, key=lambda x: (x['_s'], -x['_dur']))
         lanes = [] 
         
         for evt in cluster_sorted:
             placed = False
-            # 기존 레인들 중 들어갈 곳이 있나 확인
             for lane in lanes:
                 last_evt = lane[-1]
-                # 이 레인의 마지막 일정보다 늦게 시작하면 이 레인에 넣음
                 if evt['_s'] >= last_evt['_e']:
                     lane.append(evt)
                     placed = True
                     break
-            # 들어갈 레인이 없으면 새 레인 생성
             if not placed:
                 lanes.append([evt])
         
-        # 3. 좌표 계산 (정확히 N등분)
         total_lanes = len(lanes)
         for i, lane in enumerate(lanes):
             for evt in lane:
-                # 너비: (100% / 레인 수) - 약간의 간격
-                # 위치: (100% / 레인 수) * 순서
+                # [V73] V71 스타일로 복귀 (Gap 없음, 꽉 채우기)
                 evt['width'] = 100 / total_lanes
                 evt['left'] = i * (100 / total_lanes)
                 final_items.append(evt)
@@ -286,8 +274,15 @@ def generate_day_html(target_date, data, cal_legend_info):
         real_color = evt.get('real_color', '#cccccc')
         item = {'summary': evt.get('summary',''), 'cal': evt.get('calendar_name',''), 'bg': real_color}
         
-        # [V72] 30분 확장 유지
-        item.update({'_s': s_min, '_e': e_min, '_dur': max(e_min - s_min, 30)})
+        # [V73 핵심 수정]
+        # 시각적 높이(_dur)만 30으로 늘리는 게 아니라,
+        # 배치 계산용 종료시간(_e)도 같이 늘려야 레이아웃 엔진이 "어? 얘네 겹치네?" 하고 인식해서 옆으로 나눔.
+        visual_duration = max(e_min - s_min, 30)
+        item.update({
+            '_s': s_min,
+            '_e': s_min + visual_duration, # 여기가 핵심! 시각적 종료 시간으로 업데이트
+            '_dur': visual_duration
+        })
         
         visual_events.append(item)
 
@@ -318,9 +313,9 @@ def generate_day_html(target_date, data, cal_legend_info):
              html += f"<div class='time-label' style='top:{label_top}px; font-size: 6pt; color:#ccc;'>{h}</div>"
 
     for item in timeline_items:
-        # [V72] 박스 너비 조정 (95%만 채우고 5%는 공백으로 둠 -> 분리 효과)
-        w_pct = item['width'] * 0.95 
-        l_pct = item['left'] + 10 # 기본 10% 여백 + 계산된 위치
+        # [V73] 꽉 찬 너비로 복구
+        w_pct = item['width'] # Gap 없음
+        l_pct = item['left']
         
         top_px = (item['_s'] * PIXELS_PER_MIN) + TOP_OFFSET
         

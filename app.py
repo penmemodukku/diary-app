@@ -1,9 +1,10 @@
 # ==========================================
-# [시온이네 일기장] V84 (Final Polish - White-out Fix)
+# [시온이네 일기장] V85 (Shrink-Wrapped Masking)
 # ==========================================
-# 1. [Fix] 시간 숫자(time-label) 배경을 'white'로 설정하여 가로선을 덮어버림 (뚫림 현상 해결)
-# 2. [Layer] z-index를 명확히 하여 [선(0) < 숫자(10) < 일기(20)] 순서로 쌓이게 함
-# 3. [유지] V83의 모든 기능 (왼쪽 정렬, 스마트 줄바꿈, 6% 여백 등)
+# 1. [Fix] 시간 숫자를 <span>으로 감싸고, 배경색(White)을 <span>에만 적용
+#    -> 박스 전체(30px)가 아닌 '글자 크기만큼만' 선을 가려서, 선이 글자 바로 옆까지 붙게 함
+# 2. [Visual] 숫자와 선 사이의 불필요한 공백 제거 (스샷2 스타일 완벽 복구)
+# 3. [유지] V84의 모든 기능 (왼쪽 정렬, 6% 안전지대, 스마트 줄바꿈 등)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -296,20 +297,21 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     for h in range(25):
         top = (h * 60 * PIXELS_PER_MIN) + TOP_OFFSET
         
-        # Grid line (z-index 0)
+        # Grid line: 0px부터 시작 (z-index 0)
         html += f"<div class='grid-line' style='top:{top}px;'></div>"
         
         label_top = top - 7
         if h == 24: label_top = top - 10
         
-        # [V84] Time Label: White background to mask the line behind it
-        # z-index 10 to stay on top of the line
-        base_style = f"top:{label_top}px; left:0; width:30px; text-align:left; background-color:white; padding-right:5px; z-index:10;"
+        # [V85] <span>으로 숫자만 감싸고, 거기에만 흰색 배경 적용
+        # Container(time-label)는 투명하게 둬서 옆에 있는 선이 보이게 함
+        span_style = "background-color:white; padding-right:2px;" 
+        base_style = f"top:{label_top}px; left:0; width:30px; text-align:left; background-color:transparent; z-index:10;"
         
         if h % 3 == 0 or h == 24: 
-             html += f"<div class='time-label' style='{base_style} color:#000; font-weight:bold;'>{h}</div>"
+             html += f"<div class='time-label' style='{base_style}'><span style='{span_style} color:#000; font-weight:bold;'>{h}</span></div>"
         else:
-             html += f"<div class='time-label' style='{base_style} font-size: 6pt; color:#666;'>{h}</div>"
+             html += f"<div class='time-label' style='{base_style}'><span style='{span_style} font-size:6pt; color:#666;'>{h}</span></div>"
 
     for item in timeline_items:
         GUTTER_PCT = 6.0
@@ -325,7 +327,6 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
         else:
             wrap_style = "white-space: normal; overflow: hidden;"
         
-        # z-index 20 to stay on top of everything
         html += f"<div class='event-block' style='top:{top_px}px; height:{item['_dur']*PIXELS_PER_MIN}px; left:{l_pct}%; width:{w_pct}%; background-color:{item['bg']}40; border-left:3px solid {item['bg']}; color:#333; font-size:{font_size}; line-height:{line_height}; z-index:20; {wrap_style}'><b>{item['summary']}</b></div>"
     
     html += """
@@ -387,11 +388,10 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
         
-        /* [V84] z-index 0으로 뒤로 보냄 */
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 1px; background-color: #bbb; z-index: 0; }}
         
-        /* [V84] z-index 10으로 올리고, background white로 선을 가림 */
-        .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: white; padding-right: 5px; z-index: 10; width: 30px; text-align: left; }}
+        /* [V85] Container background removed (transparent) */
+        .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: transparent; padding-right: 5px; z-index: 10; width: 30px; text-align: left; }}
         
         .event-block {{ position: absolute; border-radius: 2px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 20; box-sizing: border-box; overflow: hidden; }}
         .date-header-manual {{ 

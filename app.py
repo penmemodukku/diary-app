@@ -1,10 +1,11 @@
 # ==========================================
-# [시온이네 일기장] V88 (Emotional Design)
+# [시온이네 일기장] V89 (Unified & Expanded Header)
 # ==========================================
-# 1. [Design] 폰트 변경: 고딕(NanumGothic) -> 명조(NanumMyeongjo) (책 같은 감성)
-# 2. [Design] 가로선 변경: 실선 -> 파선(Dashed) (가벼운 문구류 느낌)
-# 3. [Design] 모서리 변경: 2px -> 6px (부드럽고 친근한 느낌)
-# 4. [유지] V87의 모든 기능 (러닝 헤더, 할로 이펙트, 안정성 등)
+# 1. [Font] 고딕체(NanumGothic)로 복귀
+# 2. [Layout] 상단 헤더와 가로선을 content-wrapper 밖으로 빼서 메모 칸까지 확장
+# 3. [Style] 모든 페이지의 상단 제목과 가로선을 첫 페이지의 진하고 두꺼운 스타일로 통일
+# 4. [Margin] 페이지 간 여백을 일관성 있게 조정
+# 5. [유지] V88의 파선 그리드, 둥근 모서리 등 기타 디자인 요소 유지
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -280,24 +281,24 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
 
     timeline_items = calculate_visual_layout(visual_events)
 
+    # [V89] 구조 변경: 헤더와 가로선을 content-wrapper 밖으로 빼서 전체 너비로 확장
     html = f"""
     <div class='day-container'>
         <div class='first-page-container'>
+            <div class='header-wrapper-full'>
+                <div class='date-header'>{date_str}</div>
+                {legend_html}
+            </div>
+            <div class='header-line-full'></div>
+            
             <div class='content-wrapper'>
                 <div class='text-column'> 
-                    <div class='header-wrapper'>
-                        <div class='date-header'>{date_str}</div>
-                        {legend_html}
-                    </div>
-                    <div class='header-line'></div>
                     <div class='visual-page'>
                         <div class='timeline-col'>
     """
     
     for h in range(25):
         top = (h * 60 * PIXELS_PER_MIN) + TOP_OFFSET
-        
-        # [V88] 가로선: solid -> dashed
         html += f"<div class='grid-line' style='top:{top}px;'></div>"
         
         label_top = top - 7
@@ -372,24 +373,30 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         @page {{ size: A4; margin: 1.5cm; }}
         
         @page text_layer {{
-            margin-top: 2.0cm; 
+            margin-top: 1.5cm; /* [V89] 여백 통일: 첫 페이지와 유사하게 조정 */
             @top-center {{
                 content: element(headerContent); 
                 width: 100%;
             }}
         }}
         
-        /* [V88] 폰트 변경: NanumGothic -> NanumMyeongjo */
-        body {{ font-family: 'NanumMyeongjo', serif; color: #333; line-height: 1.35; font-size: {body_font}; }}
+        /* [V89] 폰트 복귀: NanumGothic */
+        body {{ font-family: 'NanumGothic', sans-serif; color: #333; line-height: 1.35; font-size: {body_font}; }}
         
         .day-container {{ page-break-after: always; }}
         .first-page-container {{
             display: inline-block; width: 100%;
             page-break-inside: avoid; break-inside: avoid; margin-bottom: 20px;
         }}
-        .header-wrapper {{ display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; position: relative; z-index: 500; background-color: white;}}
+        
+        /* [V89] 전체 너비 헤더 래퍼 */
+        .header-wrapper-full {{ display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; width: 100%; background-color: white;}}
+        /* [V89] 전체 너비 가로선 (진하고 두껍게 통일) */
+        .header-line-full {{ width: 100%; height: 2px; background-color: #5d4037; margin-bottom: 10px; }}
+
+        /* [V89] 날짜 헤더 스타일 통일 (크고 진하게) */
         .date-header {{ font-size: 16pt; font-weight: bold; color: #3e2723; margin: 0; padding: 0; }}
-        .header-line {{ width: 100%; height: 2px; background-color: #5d4037; margin-bottom: 10px; }}
+        
         .legend-container {{ text-align: right; }}
         .legend-row {{ display: flex; align-items: center; justify-content: flex-end; margin-bottom: 2px; }}
         .legend-box {{ display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; border: 1px solid #ccc; }}
@@ -397,18 +404,20 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
         
-        /* [V88] 가로선 변경: border-top dashed (점선) */
+        /* [V88 유지] 가로선: 파선(dashed) */
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 0; border-top: 1px dashed #bbb; z-index: 0; }}
         
         .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: transparent; padding-right: 5px; z-index: 10; width: 30px; text-align: left; }}
         
-        /* [V88] 모서리 변경: border-radius 2px -> 6px */
+        /* [V88 유지] 모서리: 6px */
         .event-block {{ position: absolute; border-radius: 6px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 20; box-sizing: border-box; overflow: hidden; }}
         
+        /* [V89] 반복 헤더 스타일 통일 (크고 진하게, 가로선 포함) */
         .date-header-running {{ 
             position: running(headerContent); 
-            font-size: 12pt; font-weight: bold; color: #5d4037; 
-            border-bottom: 1px solid #ddd; padding-bottom: 5px; margin-bottom: 15px; 
+            font-size: 16pt; font-weight: bold; color: #3e2723; /* 스타일 통일 */
+            border-bottom: 2px solid #5d4037; /* 가로선 통일 */
+            padding-bottom: 5px; margin-bottom: 20px; /* 여백 조정 */
             width: 100%; text-align: left;
         }}
         

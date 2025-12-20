@@ -1,9 +1,10 @@
 # ==========================================
-# [시온이네 일기장] V75 (Unified Design)
+# [시온이네 일기장] V77 (Smart Wrapping)
 # ==========================================
-# 1. [Typography] 모든 시간표 항목의 폰트 크기를 7.5pt로 통일 (Visual Noise 제거)
-# 2. [Layout] V73의 '좌우 분할' 및 '최소 높이 30분' 로직 유지
-# 3. [Design] 전체적으로 균일하고 단정한 '책' 스타일 완성
+# 1. [Logic] 30분 일정은 '한 줄 고정(No-wrap)', 40분 이상은 '줄바꿈 허용(Normal)'으로 분기 처리
+#    -> 작은 칸의 잔상 문제는 해결하고, 큰 칸의 정보량은 확보함.
+# 2. [유지] V76의 '왼쪽 여백(Gutter) 35px' (시간표 숫자 보호)
+# 3. [유지] 7.5pt 폰트 및 기타 모든 기능
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -266,7 +267,6 @@ def generate_day_html(target_date, data, cal_legend_info):
         real_color = evt.get('real_color', '#cccccc')
         item = {'summary': evt.get('summary',''), 'cal': evt.get('calendar_name',''), 'bg': real_color}
         
-        # [V73] 최소 30분 + 레이아웃용 종료시간 확장 유지
         visual_duration = max(e_min - s_min, 30)
         item.update({
             '_s': s_min,
@@ -288,7 +288,7 @@ def generate_day_html(target_date, data, cal_legend_info):
                     </div>
                     <div class='header-line'></div>
                     <div class='visual-page'>
-                        <div class='timeline-col'>
+                        <div class='timeline-col' style='margin-left: 35px;'>
     """
     
     for h in range(25):
@@ -296,22 +296,29 @@ def generate_day_html(target_date, data, cal_legend_info):
         html += f"<div class='grid-line' style='top:{top}px;'></div>"
         label_top = top - 7
         if h == 24: label_top = top - 10
+        label_style = f"top:{label_top}px; left:-35px; width:30px; text-align:right;"
+        
         if h % 3 == 0 or h == 24: 
-             html += f"<div class='time-label' style='top:{label_top}px;'>{h}</div>"
+             html += f"<div class='time-label' style='{label_style}'>{h}</div>"
         else:
-             html += f"<div class='time-label' style='top:{label_top}px; font-size: 6pt; color:#ccc;'>{h}</div>"
+             html += f"<div class='time-label' style='{label_style}; font-size: 6pt; color:#ccc;'>{h}</div>"
 
     for item in timeline_items:
         w_pct = item['width'] 
         l_pct = item['left']
         top_px = (item['_s'] * PIXELS_PER_MIN) + TOP_OFFSET
-        
-        # [V75] 폰트 크기 및 스타일 통일
-        # 조건문 없이 모든 항목을 7.5pt로 통일하여 균일한 위계성 부여
         font_size = get_scaled_size(7.5)
         line_height = '1.2'
         
-        html += f"<div class='event-block' style='top:{top_px}px; height:{item['_dur']*PIXELS_PER_MIN}px; left:{l_pct}%; width:{w_pct}%; background-color:{item['bg']}40; border-left:3px solid {item['bg']}; color:#333; font-size:{font_size}; line-height:{line_height};'><b>{item['summary']}</b></div>"
+        # [V77] 스마트 줄바꿈 로직
+        # 30분(최소) 이하면 -> 한 줄만 표시 (잔상 제거)
+        # 40분 이상이면 -> 줄바꿈 허용 (내용 표시)
+        if item['_dur'] <= 30:
+            wrap_style = "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+        else:
+            wrap_style = "white-space: normal; overflow: hidden;"
+        
+        html += f"<div class='event-block' style='top:{top_px}px; height:{item['_dur']*PIXELS_PER_MIN}px; left:{l_pct}%; width:{w_pct}%; background-color:{item['bg']}40; border-left:3px solid {item['bg']}; color:#333; font-size:{font_size}; line-height:{line_height}; {wrap_style}'><b>{item['summary']}</b></div>"
     
     html += """
                         </div>

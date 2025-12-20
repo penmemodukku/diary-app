@@ -1,10 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V73 (Layout Logic Fix)
+# [시온이네 일기장] V75 (Unified Design)
 # ==========================================
-# 1. [Fix] 최소 높이(30분) 확장 시, '끝나는 시간(_e)'도 함께 확장하여 레이아웃 엔진이 '겹침'을 인식하도록 수정
-#    -> 이로써 22시 항목들이 '위아래 겹침'이 아닌 '좌우 분할'로 정상 작동함.
-# 2. [Revert] V72의 '박스 간격(Gap)' 제거 -> V71처럼 꽉 찬(Tight) 디자인으로 복귀
-# 3. [유지] 기타 모든 편의 기능
+# 1. [Typography] 모든 시간표 항목의 폰트 크기를 7.5pt로 통일 (Visual Noise 제거)
+# 2. [Layout] V73의 '좌우 분할' 및 '최소 높이 30분' 로직 유지
+# 3. [Design] 전체적으로 균일하고 단정한 '책' 스타일 완성
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -179,7 +178,6 @@ def calculate_visual_layout(events):
     cluster_end = sorted_events[0]['_e']
     for i in range(1, len(sorted_events)):
         evt = sorted_events[i]
-        # [V73] _e 값이 시각적 확장에 맞춰져 있으므로, 겹침 감지가 정확해짐
         if evt['_s'] < cluster_end:
             current_cluster.append(evt)
             cluster_end = max(cluster_end, evt['_e'])
@@ -188,13 +186,10 @@ def calculate_visual_layout(events):
             current_cluster = [evt]
             cluster_end = evt['_e']
     clusters.append(current_cluster)
-    
     final_items = []
     for cluster in clusters:
-        # [V73] 그룹 내 정렬 우선순위: 시작시간 -> (긴 시간 우선)
         cluster_sorted = sorted(cluster, key=lambda x: (x['_s'], -x['_dur']))
         lanes = [] 
-        
         for evt in cluster_sorted:
             placed = False
             for lane in lanes:
@@ -205,15 +200,12 @@ def calculate_visual_layout(events):
                     break
             if not placed:
                 lanes.append([evt])
-        
         total_lanes = len(lanes)
         for i, lane in enumerate(lanes):
             for evt in lane:
-                # [V73] V71 스타일로 복귀 (Gap 없음, 꽉 채우기)
                 evt['width'] = 100 / total_lanes
                 evt['left'] = i * (100 / total_lanes)
                 final_items.append(evt)
-                
     return final_items
 
 def get_time_info(event):
@@ -274,16 +266,13 @@ def generate_day_html(target_date, data, cal_legend_info):
         real_color = evt.get('real_color', '#cccccc')
         item = {'summary': evt.get('summary',''), 'cal': evt.get('calendar_name',''), 'bg': real_color}
         
-        # [V73 핵심 수정]
-        # 시각적 높이(_dur)만 30으로 늘리는 게 아니라,
-        # 배치 계산용 종료시간(_e)도 같이 늘려야 레이아웃 엔진이 "어? 얘네 겹치네?" 하고 인식해서 옆으로 나눔.
+        # [V73] 최소 30분 + 레이아웃용 종료시간 확장 유지
         visual_duration = max(e_min - s_min, 30)
         item.update({
             '_s': s_min,
-            '_e': s_min + visual_duration, # 여기가 핵심! 시각적 종료 시간으로 업데이트
+            '_e': s_min + visual_duration, 
             '_dur': visual_duration
         })
-        
         visual_events.append(item)
 
     timeline_items = calculate_visual_layout(visual_events)
@@ -313,22 +302,14 @@ def generate_day_html(target_date, data, cal_legend_info):
              html += f"<div class='time-label' style='top:{label_top}px; font-size: 6pt; color:#ccc;'>{h}</div>"
 
     for item in timeline_items:
-        # [V73] 꽉 찬 너비로 복구
-        w_pct = item['width'] # Gap 없음
+        w_pct = item['width'] 
         l_pct = item['left']
-        
         top_px = (item['_s'] * PIXELS_PER_MIN) + TOP_OFFSET
         
-        dur = item['_dur']
-        if dur < 20: 
-            font_size = get_scaled_size(5)
-            line_height = '1.0' 
-        elif dur < 40:
-            font_size = get_scaled_size(6.5) 
-            line_height = '1.1'
-        else:
-            font_size = get_scaled_size(8.5)
-            line_height = '1.2'
+        # [V75] 폰트 크기 및 스타일 통일
+        # 조건문 없이 모든 항목을 7.5pt로 통일하여 균일한 위계성 부여
+        font_size = get_scaled_size(7.5)
+        line_height = '1.2'
         
         html += f"<div class='event-block' style='top:{top_px}px; height:{item['_dur']*PIXELS_PER_MIN}px; left:{l_pct}%; width:{w_pct}%; background-color:{item['bg']}40; border-left:3px solid {item['bg']}; color:#333; font-size:{font_size}; line-height:{line_height};'><b>{item['summary']}</b></div>"
     

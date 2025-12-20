@@ -1,10 +1,11 @@
 # ==========================================
-# [시온이네 일기장] V77 (Smart Wrapping)
+# [시온이네 일기장] V78 (Alignment & Contrast)
 # ==========================================
-# 1. [Logic] 30분 일정은 '한 줄 고정(No-wrap)', 40분 이상은 '줄바꿈 허용(Normal)'으로 분기 처리
-#    -> 작은 칸의 잔상 문제는 해결하고, 큰 칸의 정보량은 확보함.
-# 2. [유지] V76의 '왼쪽 여백(Gutter) 35px' (시간표 숫자 보호)
-# 3. [유지] 7.5pt 폰트 및 기타 모든 기능
+# 1. [Alignment] 격자선(Grid)을 왼쪽 끝(0px)으로 복귀시켜 날짜 헤더와 정렬 맞춤
+#    대신 이벤트 박스만 오른쪽으로 5% 밀어서 시간 숫자 공간 확보
+# 2. [Legend] 범례 순서를 사용자 입력 순서(final_ids)와 동일하게 강제 정렬
+# 3. [Contrast] 격자선(#ccc)과 시간 숫자(#666, #000)를 훨씬 진하게 변경
+# 4. [유지] V77의 스마트 줄바꿈, 7.5pt 폰트 등 모든 기능
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -238,7 +239,8 @@ def estimate_height(desc, is_title=False):
     line_height = 16 * FONT_SCALE
     return base + (lines * line_height) + 10 
 
-def generate_day_html(target_date, data, cal_legend_info):
+# [V78] ordered_ids 인자 추가 (순서 보장을 위해)
+def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     allday = data['allday']
     timed = data['timed']
     if not allday and not timed: return ""
@@ -249,12 +251,17 @@ def generate_day_html(target_date, data, cal_legend_info):
     PIXELS_PER_MIN = COL_HEIGHT / 1440
     TOP_OFFSET = 10
     
+    # [V78] Legend 순서 정렬
     used_cal_ids = set()
     for evt in allday + timed: used_cal_ids.add(evt.get('calendar_id'))
+    
     legend_html = "<div class='legend-container'>"
-    for cal_id in used_cal_ids:
-        info = cal_legend_info.get(cal_id)
-        if info: legend_html += f"<div class='legend-row'><span class='legend-box' style='background-color:{info['color']}'></span><span class='legend-text'>{info['name']}</span></div>"
+    # 순서가 보장된 ordered_ids를 순회하며 존재하는 것만 출력
+    for cal_id in ordered_ids:
+        if cal_id in used_cal_ids:
+            info = cal_legend_info.get(cal_id)
+            if info: 
+                legend_html += f"<div class='legend-row'><span class='legend-box' style='background-color:{info['color']}'></span><span class='legend-text'>{info['name']}</span></div>"
     legend_html += "</div>"
 
     visual_events = []
@@ -288,31 +295,41 @@ def generate_day_html(target_date, data, cal_legend_info):
                     </div>
                     <div class='header-line'></div>
                     <div class='visual-page'>
-                        <div class='timeline-col' style='margin-left: 35px;'>
+                        <div class='timeline-col'>
     """
     
     for h in range(25):
         top = (h * 60 * PIXELS_PER_MIN) + TOP_OFFSET
-        html += f"<div class='grid-line' style='top:{top}px;'></div>"
+        
+        # [V78] 격자선 진하게(#ccc), 왼쪽 끝(0px)부터 시작
+        html += f"<div class='grid-line' style='top:{top}px; left:0; width:100%; height:1px; background-color:#ccc;'></div>"
+        
         label_top = top - 7
         if h == 24: label_top = top - 10
-        label_style = f"top:{label_top}px; left:-35px; width:30px; text-align:right;"
         
+        # [V78] 시간 숫자 진하게, 위치 조정 (왼쪽 끝)
         if h % 3 == 0 or h == 24: 
-             html += f"<div class='time-label' style='{label_style}'>{h}</div>"
+             # 3시간 단위: 완전 검정(#000), 굵게
+             html += f"<div class='time-label' style='top:{label_top}px; left:0; width:30px; color:#000; font-weight:bold;'>{h}</div>"
         else:
-             html += f"<div class='time-label' style='{label_style}; font-size: 6pt; color:#ccc;'>{h}</div>"
+             # 일반 시간: 진한 회색(#666)
+             html += f"<div class='time-label' style='top:{label_top}px; left:0; width:30px; font-size: 6pt; color:#666;'>{h}</div>"
 
     for item in timeline_items:
-        w_pct = item['width'] 
-        l_pct = item['left']
+        # [V78] 이벤트 박스 위치 계산 (Gutter 5% 적용)
+        # 100% 공간 중 왼쪽 5%는 숫자 공간으로 비워둠
+        GUTTER_PCT = 5.0
+        
+        # 원래 width(0~100)를 남은 95% 공간에 맞춰 축소
+        w_pct = item['width'] * (100 - GUTTER_PCT) / 100
+        
+        # 원래 left(0~100)를 95% 공간으로 축소하고, 5%만큼 오른쪽으로 이동
+        l_pct = GUTTER_PCT + (item['left'] * (100 - GUTTER_PCT) / 100)
+        
         top_px = (item['_s'] * PIXELS_PER_MIN) + TOP_OFFSET
         font_size = get_scaled_size(7.5)
         line_height = '1.2'
         
-        # [V77] 스마트 줄바꿈 로직
-        # 30분(최소) 이하면 -> 한 줄만 표시 (잔상 제거)
-        # 40분 이상이면 -> 줄바꿈 허용 (내용 표시)
         if item['_dur'] <= 30:
             wrap_style = "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
         else:
@@ -355,7 +372,8 @@ def generate_day_html(target_date, data, cal_legend_info):
     html += "</div>"
     return html
 
-def create_full_pdf(daily_data, cal_legend_info):
+# [V78] create_full_pdf에 ordered_ids 인자 추가
+def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
     font_config = FontConfiguration()
     body_font = get_scaled_size(8.5)
     meta_font = get_scaled_size(7.5)
@@ -378,8 +396,10 @@ def create_full_pdf(daily_data, cal_legend_info):
         .legend-text {{ font-size: 7pt; color: #666; }}
         .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
-        .grid-line {{ position: absolute; left: 0; width: 100%; height: 1px; background-color: #eee; z-index: 0; }}
-        .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #999; background-color: white; padding-right: 5px; z-index: 1; }}
+        
+        /* [V78] Grid Line CSS 수정: 기본 스타일 제거, 인라인에서 제어 */
+        .time-label {{ position: absolute; text-align: right; padding-right: 5px; z-index: 1; }}
+        
         .event-block {{ position: absolute; border-radius: 2px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 10; box-sizing: border-box; overflow: hidden; }}
         .date-header-manual {{ 
             font-size: 12pt; font-weight: bold; color: #5d4037; 
@@ -404,8 +424,9 @@ def create_full_pdf(daily_data, cal_legend_info):
     """
     
     full_html = "<html><body>"
+    # [V78] generate_day_html에 ordered_ids 전달
     for d, events in sorted(daily_data.items()):
-        full_html += generate_day_html(d, events, cal_legend_info)
+        full_html += generate_day_html(d, events, cal_legend_info, ordered_ids)
     full_html += "</body></html>"
     
     return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css_style, font_config=font_config)], font_config=font_config)
@@ -473,7 +494,8 @@ if service:
                 if total_count == 0:
                     st.warning("가져온 일기가 없습니다.")
                 else:
-                    pdf_bytes = create_full_pdf(daily_data, cal_legend_info)
+                    # [V78] final_ids(순서 있는 리스트) 전달
+                    pdf_bytes = create_full_pdf(daily_data, cal_legend_info, final_ids)
                     st.session_state['pdf_data'] = pdf_bytes
                     st.balloons()
                     st.success(f"완성! 총 {total_count}개의 일기를 담았습니다.")

@@ -1,9 +1,10 @@
 # ==========================================
-# [시온이네 일기장] V80 (Left Align Perfect)
+# [시온이네 일기장] V81 (Absolute Alignment)
 # ==========================================
-# 1. [Visual] 시간표 숫자의 정렬을 '왼쪽(Left)'으로 변경하여 상단 가로선과 시작점 일치시킴
-# 2. [Layout] 이벤트 박스는 기존 위치(5% 여백) 고수 -> 숫자와 겹치지 않고 간격 확보
-# 3. [유지] V79의 모든 기능 (가로선 복구, 스마트 줄바꿈, 순서 정렬 등)
+# 1. [Fix] timeline-col의 마진을 제거하여 가로선(Grid)이 맨 왼쪽(0px)부터 시작하도록 수정
+#    -> 상단 날짜 가로선과 수직 정렬 일치
+# 2. [Layout] 시간 숫자도 0px에 배치, 일기 항목은 왼쪽 6% 여백을 두고 배치 (겹침 방지)
+# 3. [유지] V80의 모든 기능 (좌측 정렬, 진한 색상, 스마트 줄바꿈 등)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -296,21 +297,22 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     for h in range(25):
         top = (h * 60 * PIXELS_PER_MIN) + TOP_OFFSET
         
-        # Grid line: 꽉 찬 가로선
+        # [V81] 가로선: 왼쪽 끝(0px)부터 시작, 100% 길이
         html += f"<div class='grid-line' style='top:{top}px;'></div>"
         
         label_top = top - 7
         if h == 24: label_top = top - 10
         
-        # [V80] text-align: left로 변경하여 왼쪽 벽에 붙임
+        # [V81] 시간 숫자: 왼쪽 끝(0px)에 배치, 왼쪽 정렬
         if h % 3 == 0 or h == 24: 
              html += f"<div class='time-label' style='top:{label_top}px; color:#000; font-weight:bold; text-align:left;'>{h}</div>"
         else:
              html += f"<div class='time-label' style='top:{label_top}px; font-size: 6pt; color:#666; text-align:left;'>{h}</div>"
 
     for item in timeline_items:
-        # 5% 여백 유지
-        GUTTER_PCT = 5.0
+        # [V81] 이벤트 박스만 6% 오른쪽으로 밀어서 배치 (GUTTER_PCT)
+        # 전체 100% 중 왼쪽 6%는 숫자 공간, 나머지 94%를 이벤트가 사용
+        GUTTER_PCT = 6.0
         w_pct = item['width'] * (100 - GUTTER_PCT) / 100
         l_pct = GUTTER_PCT + (item['left'] * (100 - GUTTER_PCT) / 100)
         
@@ -384,9 +386,9 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
         
+        /* [V81] grid-line: margin 없이 왼쪽 0부터 시작 */
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 1px; background-color: #bbb; z-index: 0; }}
         
-        /* [V80] text-align: left로 변경 */
         .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: white; padding-right: 5px; z-index: 1; width: 30px; text-align: left; }}
         
         .event-block {{ position: absolute; border-radius: 2px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 10; box-sizing: border-box; overflow: hidden; }}

@@ -1,10 +1,10 @@
 # ==========================================
-# [시온이네 일기장] V82 (Transparent Perfection)
+# [시온이네 일기장] V83 (Halo Effect Fix)
 # ==========================================
-# 1. [Fix] 시간 숫자(time-label)의 배경을 'transparent'로 변경
-#    -> 가로선이 숫자 뒤로 뚫고 지나가 왼쪽 끝(0px)까지 끊김 없이 보이도록 수정 (스샷2 스타일 복구)
-# 2. [Visual] 숫자는 왼쪽 정렬(Left Align) 유지, 일기 항목은 6% 여백 유지
-# 3. [유지] V81의 모든 기능 (스마트 줄바꿈, 7.5pt 폰트, 진한 색상 등)
+# 1. [Visual Fix] 시간 숫자에 'text-shadow'를 활용한 할로(Halo) 효과 적용
+#    -> 배경 박스 없이 글자 주변의 선만 자연스럽게 지워줌 (관통 X, 끊김 X)
+# 2. [Layout] 가로선(Grid)은 0px부터, 일기 항목은 6% 여백 유지
+# 3. [Color] 배경색(#FDFCF0)과 동일한 섀도우를 사용하여 자연스러운 마스킹 처리
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -291,27 +291,28 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
                     </div>
                     <div class='header-line'></div>
                     <div class='visual-page'>
-                        <div class='timeline-col' style='margin:0; padding:0;'>
+                        <div class='timeline-col'>
     """
     
     for h in range(25):
         top = (h * 60 * PIXELS_PER_MIN) + TOP_OFFSET
         
-        # Grid line: 0px부터 시작, 100% 길이
+        # Grid line: 0px부터 시작 (뒤에 깔림)
         html += f"<div class='grid-line' style='top:{top}px;'></div>"
         
         label_top = top - 7
         if h == 24: label_top = top - 10
         
-        # [V82] background-color 제거(transparent) -> 가로선이 숫자 뒤로 보임
-        # text-align: left -> 왼쪽 끝 정렬
+        # [V83] text-shadow: 배경색(#FDFCF0)으로 두꺼운 테두리를 주어 선을 자연스럽게 가림
+        shadow_style = "text-shadow: 3px 0 #FDFCF0, -3px 0 #FDFCF0, 0 3px #FDFCF0, 0 -3px #FDFCF0;"
+        base_style = f"top:{label_top}px; left:0; width:30px; text-align:left; background-color:transparent; {shadow_style}"
+        
         if h % 3 == 0 or h == 24: 
-             html += f"<div class='time-label' style='top:{label_top}px; color:#000; font-weight:bold; text-align:left;'>{h}</div>"
+             html += f"<div class='time-label' style='{base_style} color:#000; font-weight:bold;'>{h}</div>"
         else:
-             html += f"<div class='time-label' style='top:{label_top}px; font-size: 6pt; color:#666; text-align:left;'>{h}</div>"
+             html += f"<div class='time-label' style='{base_style} font-size: 6pt; color:#666;'>{h}</div>"
 
     for item in timeline_items:
-        # 6% 여백 유지 -> 숫자가 겹치지 않는 안전지대
         GUTTER_PCT = 6.0
         w_pct = item['width'] * (100 - GUTTER_PCT) / 100
         l_pct = GUTTER_PCT + (item['left'] * (100 - GUTTER_PCT) / 100)
@@ -386,10 +387,9 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
         
-        /* [V82] Grid Line: 0px부터 시작 */
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 1px; background-color: #bbb; z-index: 0; }}
         
-        /* [V82] Time Label: 배경 투명화(transparent) -> 선이 뒤로 보임 */
+        /* [V83] Time Label: transparent background, z-index 1 */
         .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: transparent; padding-right: 5px; z-index: 1; width: 30px; text-align: left; }}
         
         .event-block {{ position: absolute; border-radius: 2px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 10; box-sizing: border-box; overflow: hidden; }}

@@ -1,10 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V83 (Halo Effect Fix)
+# [시온이네 일기장] V84 (Final Polish - White-out Fix)
 # ==========================================
-# 1. [Visual Fix] 시간 숫자에 'text-shadow'를 활용한 할로(Halo) 효과 적용
-#    -> 배경 박스 없이 글자 주변의 선만 자연스럽게 지워줌 (관통 X, 끊김 X)
-# 2. [Layout] 가로선(Grid)은 0px부터, 일기 항목은 6% 여백 유지
-# 3. [Color] 배경색(#FDFCF0)과 동일한 섀도우를 사용하여 자연스러운 마스킹 처리
+# 1. [Fix] 시간 숫자(time-label) 배경을 'white'로 설정하여 가로선을 덮어버림 (뚫림 현상 해결)
+# 2. [Layer] z-index를 명확히 하여 [선(0) < 숫자(10) < 일기(20)] 순서로 쌓이게 함
+# 3. [유지] V83의 모든 기능 (왼쪽 정렬, 스마트 줄바꿈, 6% 여백 등)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -297,15 +296,15 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     for h in range(25):
         top = (h * 60 * PIXELS_PER_MIN) + TOP_OFFSET
         
-        # Grid line: 0px부터 시작 (뒤에 깔림)
+        # Grid line (z-index 0)
         html += f"<div class='grid-line' style='top:{top}px;'></div>"
         
         label_top = top - 7
         if h == 24: label_top = top - 10
         
-        # [V83] text-shadow: 배경색(#FDFCF0)으로 두꺼운 테두리를 주어 선을 자연스럽게 가림
-        shadow_style = "text-shadow: 3px 0 #FDFCF0, -3px 0 #FDFCF0, 0 3px #FDFCF0, 0 -3px #FDFCF0;"
-        base_style = f"top:{label_top}px; left:0; width:30px; text-align:left; background-color:transparent; {shadow_style}"
+        # [V84] Time Label: White background to mask the line behind it
+        # z-index 10 to stay on top of the line
+        base_style = f"top:{label_top}px; left:0; width:30px; text-align:left; background-color:white; padding-right:5px; z-index:10;"
         
         if h % 3 == 0 or h == 24: 
              html += f"<div class='time-label' style='{base_style} color:#000; font-weight:bold;'>{h}</div>"
@@ -326,7 +325,8 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
         else:
             wrap_style = "white-space: normal; overflow: hidden;"
         
-        html += f"<div class='event-block' style='top:{top_px}px; height:{item['_dur']*PIXELS_PER_MIN}px; left:{l_pct}%; width:{w_pct}%; background-color:{item['bg']}40; border-left:3px solid {item['bg']}; color:#333; font-size:{font_size}; line-height:{line_height}; {wrap_style}'><b>{item['summary']}</b></div>"
+        # z-index 20 to stay on top of everything
+        html += f"<div class='event-block' style='top:{top_px}px; height:{item['_dur']*PIXELS_PER_MIN}px; left:{l_pct}%; width:{w_pct}%; background-color:{item['bg']}40; border-left:3px solid {item['bg']}; color:#333; font-size:{font_size}; line-height:{line_height}; z-index:20; {wrap_style}'><b>{item['summary']}</b></div>"
     
     html += """
                         </div>
@@ -387,12 +387,13 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
         
+        /* [V84] z-index 0으로 뒤로 보냄 */
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 1px; background-color: #bbb; z-index: 0; }}
         
-        /* [V83] Time Label: transparent background, z-index 1 */
-        .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: transparent; padding-right: 5px; z-index: 1; width: 30px; text-align: left; }}
+        /* [V84] z-index 10으로 올리고, background white로 선을 가림 */
+        .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: white; padding-right: 5px; z-index: 10; width: 30px; text-align: left; }}
         
-        .event-block {{ position: absolute; border-radius: 2px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 10; box-sizing: border-box; overflow: hidden; }}
+        .event-block {{ position: absolute; border-radius: 2px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 20; box-sizing: border-box; overflow: hidden; }}
         .date-header-manual {{ 
             font-size: 12pt; font-weight: bold; color: #5d4037; 
             border-bottom: 1px solid #ddd; padding-bottom: 5px; margin-bottom: 15px; 

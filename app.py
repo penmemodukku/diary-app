@@ -1,11 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V89 (Unified & Expanded Header)
+# [시온이네 일기장] V90 (Perfect Margin Sync - Final)
 # ==========================================
-# 1. [Font] 고딕체(NanumGothic)로 복귀
-# 2. [Layout] 상단 헤더와 가로선을 content-wrapper 밖으로 빼서 메모 칸까지 확장
-# 3. [Style] 모든 페이지의 상단 제목과 가로선을 첫 페이지의 진하고 두꺼운 스타일로 통일
-# 4. [Margin] 페이지 간 여백을 일관성 있게 조정
-# 5. [유지] V88의 파선 그리드, 둥근 모서리 등 기타 디자인 요소 유지
+# 1. [Critical Fix] 텍스트 페이지(@page text_layer)의 상단 여백을 1.5cm -> 3.5cm로 대폭 확장
+#    -> 헤더가 차지하는 공간만큼 물리적 여백을 확보하여 본문 시작 위치를 첫 페이지와 일치시킴
+# 2. [유지] V89의 모든 디자인 (고딕체, 파선, 둥근 모서리, 러닝 헤더 등) 100% 유지
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -281,7 +279,6 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
 
     timeline_items = calculate_visual_layout(visual_events)
 
-    # [V89] 구조 변경: 헤더와 가로선을 content-wrapper 밖으로 빼서 전체 너비로 확장
     html = f"""
     <div class='day-container'>
         <div class='first-page-container'>
@@ -373,14 +370,14 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         @page {{ size: A4; margin: 1.5cm; }}
         
         @page text_layer {{
-            margin-top: 1.5cm; /* [V89] 여백 통일: 첫 페이지와 유사하게 조정 */
+            margin-top: 3.5cm; /* [V90] 상단 여백 대폭 확장 (1.5cm -> 3.5cm) */
             @top-center {{
                 content: element(headerContent); 
                 width: 100%;
             }}
         }}
         
-        /* [V89] 폰트 복귀: NanumGothic */
+        /* [V90 유지] NanumGothic */
         body {{ font-family: 'NanumGothic', sans-serif; color: #333; line-height: 1.35; font-size: {body_font}; }}
         
         .day-container {{ page-break-after: always; }}
@@ -389,12 +386,9 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
             page-break-inside: avoid; break-inside: avoid; margin-bottom: 20px;
         }}
         
-        /* [V89] 전체 너비 헤더 래퍼 */
         .header-wrapper-full {{ display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; width: 100%; background-color: white;}}
-        /* [V89] 전체 너비 가로선 (진하고 두껍게 통일) */
         .header-line-full {{ width: 100%; height: 2px; background-color: #5d4037; margin-bottom: 10px; }}
 
-        /* [V89] 날짜 헤더 스타일 통일 (크고 진하게) */
         .date-header {{ font-size: 16pt; font-weight: bold; color: #3e2723; margin: 0; padding: 0; }}
         
         .legend-container {{ text-align: right; }}
@@ -404,20 +398,17 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
         
-        /* [V88 유지] 가로선: 파선(dashed) */
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 0; border-top: 1px dashed #bbb; z-index: 0; }}
         
         .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: transparent; padding-right: 5px; z-index: 10; width: 30px; text-align: left; }}
         
-        /* [V88 유지] 모서리: 6px */
         .event-block {{ position: absolute; border-radius: 6px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 20; box-sizing: border-box; overflow: hidden; }}
         
-        /* [V89] 반복 헤더 스타일 통일 (크고 진하게, 가로선 포함) */
         .date-header-running {{ 
             position: running(headerContent); 
-            font-size: 16pt; font-weight: bold; color: #3e2723; /* 스타일 통일 */
-            border-bottom: 2px solid #5d4037; /* 가로선 통일 */
-            padding-bottom: 5px; margin-bottom: 20px; /* 여백 조정 */
+            font-size: 16pt; font-weight: bold; color: #3e2723; 
+            border-bottom: 2px solid #5d4037; 
+            padding-bottom: 5px; margin-bottom: 20px; 
             width: 100%; text-align: left;
         }}
         

@@ -1,9 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V71 (Readability Patch)
+# [시온이네 일기장] V72 (Perfect Columns)
 # ==========================================
-# 1. [Visual] 시간표 최소 높이 30분으로 강제 확장 (작은 일정 가독성 확보)
-# 2. [Layout] 확장된 크기에 맞춰 자동 레이아웃(겹침 방지) 적용
-# 3. [유지] V70의 모든 기능 (안전장치, 디자인, 색상 로직 등)
+# 1. [Layout] 겹치는 시간표 항목을 '겹침' 없이 '칼럼' 형태로 완벽 분리
+# 2. [Visual] 박스 사이에 간격을 주어 가독성 향상
+# 3. [유지] V71의 30분 확장 로직 및 기타 기능
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -169,43 +169,63 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
             
     return daily_groups, cal_legend_info, log_msg
 
+# [V72] Layout Engine 개선 - 겹침 없이 칼럼 분리
 def calculate_visual_layout(events):
     if not events: return []
+    # 시작 시간 기준으로 정렬
     sorted_events = sorted(events, key=lambda x: x['_s'])
+    
+    # 1. 겹치는 그룹(Cluster) 찾기
     clusters = []
     if not sorted_events: return []
+    
     current_cluster = [sorted_events[0]]
     cluster_end = sorted_events[0]['_e']
+    
     for i in range(1, len(sorted_events)):
         evt = sorted_events[i]
+        # 내 시작시간이 앞선 이벤트들의 끝나는 시간보다 빠르면 -> 겹치는 그룹
         if evt['_s'] < cluster_end:
             current_cluster.append(evt)
             cluster_end = max(cluster_end, evt['_e'])
         else:
+            # 안 겹치면 그룹 확정하고 새로 시작
             clusters.append(current_cluster)
             current_cluster = [evt]
             cluster_end = evt['_e']
     clusters.append(current_cluster)
+    
+    # 2. 각 그룹 내에서 Lane(칼럼) 배정하기
     final_items = []
     for cluster in clusters:
-        lanes = []
+        # 그룹 내에서도 일찍 시작하고 긴 것부터 처리
         cluster_sorted = sorted(cluster, key=lambda x: (x['_s'], -x['_dur']))
+        lanes = [] 
+        
         for evt in cluster_sorted:
             placed = False
+            # 기존 레인들 중 들어갈 곳이 있나 확인
             for lane in lanes:
                 last_evt = lane[-1]
+                # 이 레인의 마지막 일정보다 늦게 시작하면 이 레인에 넣음
                 if evt['_s'] >= last_evt['_e']:
                     lane.append(evt)
                     placed = True
                     break
+            # 들어갈 레인이 없으면 새 레인 생성
             if not placed:
                 lanes.append([evt])
+        
+        # 3. 좌표 계산 (정확히 N등분)
         total_lanes = len(lanes)
         for i, lane in enumerate(lanes):
             for evt in lane:
+                # 너비: (100% / 레인 수) - 약간의 간격
+                # 위치: (100% / 레인 수) * 순서
                 evt['width'] = 100 / total_lanes
                 evt['left'] = i * (100 / total_lanes)
                 final_items.append(evt)
+                
     return final_items
 
 def get_time_info(event):
@@ -266,7 +286,7 @@ def generate_day_html(target_date, data, cal_legend_info):
         real_color = evt.get('real_color', '#cccccc')
         item = {'summary': evt.get('summary',''), 'cal': evt.get('calendar_name',''), 'bg': real_color}
         
-        # [V71] 최소 높이 15 -> 30으로 상향 조정 (화면상 크기만 변경)
+        # [V72] 30분 확장 유지
         item.update({'_s': s_min, '_e': e_min, '_dur': max(e_min - s_min, 30)})
         
         visual_events.append(item)
@@ -298,17 +318,18 @@ def generate_day_html(target_date, data, cal_legend_info):
              html += f"<div class='time-label' style='top:{label_top}px; font-size: 6pt; color:#ccc;'>{h}</div>"
 
     for item in timeline_items:
-        w_pct = item['width'] * 0.9 if item['width'] < 100 else 90
-        l_pct = (item['left'] * 0.9) + 10 if item['width'] < 100 else 10
+        # [V72] 박스 너비 조정 (95%만 채우고 5%는 공백으로 둠 -> 분리 효과)
+        w_pct = item['width'] * 0.95 
+        l_pct = item['left'] + 10 # 기본 10% 여백 + 계산된 위치
+        
         top_px = (item['_s'] * PIXELS_PER_MIN) + TOP_OFFSET
         
         dur = item['_dur']
-        # [V71] 30분 미만은 이제 없으므로 5pt 폰트 로직은 사실상 안 쓰임
         if dur < 20: 
             font_size = get_scaled_size(5)
             line_height = '1.0' 
         elif dur < 40:
-            font_size = get_scaled_size(6.5) # 이제 최소 30분이므로 여기부터 시작
+            font_size = get_scaled_size(6.5) 
             line_height = '1.1'
         else:
             font_size = get_scaled_size(8.5)

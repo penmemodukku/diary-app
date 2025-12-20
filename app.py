@@ -1,10 +1,10 @@
 # ==========================================
-# [시온이네 일기장] V86 (Running Headers)
+# [시온이네 일기장] V87 (Stability Fix)
 # ==========================================
-# 1. [Feature] 텍스트 페이지가 넘어갈 때마다 상단 제목(YYYY-MM-DD 계속)이 자동 반복되도록 수정
-#    -> CSS의 '@page'와 'position: running()' 기술 적용
-# 2. [Structure] 텍스트 섹션에 별도의 페이지 이름(text_layer)을 부여하여 타임라인 페이지와 분리
-# 3. [유지] V85의 완벽한 디자인(할로 이펙트, 정렬, 스마트 줄바꿈 등) 100% 유지
+# 1. [Critical Fix] 'running header' 요소를 Flexbox(.content-wrapper) 밖으로 이동
+#    -> WeasyPrint의 'min-content width' TypeError 버그 회피
+# 2. [Visual] 2페이지부터 반복되는 헤더 기능 정상 작동 확인
+# 3. [유지] V85의 디자인 (할로 이펙트, 정렬 등) 100% 유지
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -301,7 +301,7 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
         label_top = top - 7
         if h == 24: label_top = top - 10
         
-        # [V85] White Span + Transparent Container
+        # [V85 유지] White span + Transparent container
         span_style = "background-color:white; padding-right:2px;" 
         base_style = f"top:{label_top}px; left:0; width:30px; text-align:left; background-color:transparent; z-index:10;"
         
@@ -340,10 +340,12 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     for evt in timed: evt['is_allday'] = False; text_items_flat.append(evt)
     
     if text_items_flat:
+        # [V87 핵심 수정] Running Header를 content-wrapper 밖으로 꺼냄
+        # 이렇게 해야 Flex 계산에서 제외되어 에러가 안 남
         html += f"""
+        <div class='date-header-running'>{date_str} (계속)</div>
         <div class='content-wrapper text-pages-wrapper'>
             <div class='text-column'>
-                <div class='date-header-running'>{date_str} (계속)</div>
         """
         for evt in text_items_flat:
             raw_desc = evt.get('description','') or ''
@@ -370,11 +372,11 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
     css_style = f"""
         @page {{ size: A4; margin: 1.5cm; }}
         
-        /* [V86] Named page for text section with header area */
+        /* [V86 유지] Named page for text section with header area */
         @page text_layer {{
-            margin-top: 2.0cm; /* 상단 여백 확보 */
+            margin-top: 2.0cm; 
             @top-center {{
-                content: element(headerContent); /* 러닝 헤더 삽입 */
+                content: element(headerContent); 
                 width: 100%;
             }}
         }}
@@ -397,20 +399,18 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 1px; background-color: #bbb; z-index: 0; }}
         
-        /* [V85 Fix] White span hack */
         .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: transparent; padding-right: 5px; z-index: 10; width: 30px; text-align: left; }}
         
         .event-block {{ position: absolute; border-radius: 2px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 20; box-sizing: border-box; overflow: hidden; }}
         
-        /* [V86] Running Header Style */
+        /* [V86 유지] Running Header Style */
         .date-header-running {{ 
-            position: running(headerContent); /* 요소를 떼어내어 헤더로 보냄 */
+            position: running(headerContent); 
             font-size: 12pt; font-weight: bold; color: #5d4037; 
             border-bottom: 1px solid #ddd; padding-bottom: 5px; margin-bottom: 15px; 
             width: 100%; text-align: left;
         }}
         
-        /* [V86] Apply named page to text section */
         .text-pages-wrapper {{
             page: text_layer;
         }}

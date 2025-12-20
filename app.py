@@ -1,9 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V70 (Safety & Style Edition)
+# [시온이네 일기장] V71 (Readability Patch)
 # ==========================================
-# 1. [Safety] 100일 이상 선택 시 '메모리 부족 주의' 경고 메시지 표시
-# 2. [Style] 웹페이지 배경색 커스터마이징 (CSS 주입)
-# 3. [UX] 진행 상황 멘트 구체화
+# 1. [Visual] 시간표 최소 높이 30분으로 강제 확장 (작은 일정 가독성 확보)
+# 2. [Layout] 확장된 크기에 맞춰 자동 레이아웃(겹침 방지) 적용
+# 3. [유지] V70의 모든 기능 (안전장치, 디자인, 색상 로직 등)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -13,27 +13,19 @@ from googleapiclient.discovery import build
 from datetime import datetime, timedelta, date, timezone
 import math
 
-# --- [0. 페이지 설정 (가장 먼저 실행)] ---
+# --- [0. 페이지 설정] ---
 st.set_page_config(
     page_title="시온이네 일기장 인쇄소",
-    page_icon="📖", # 탭 아이콘 변경
+    page_icon="📖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- [1. 스타일 꾸미기 (CSS 주입)] ---
-# 배경색을 따뜻한 웜톤으로, 버튼을 좀 더 눈에 띄게
+# --- [1. 스타일 꾸미기] ---
 st.markdown("""
     <style>
-    /* 메인 배경색 변경 */
-    .stApp {
-        background-color: #FDFCF0; /* 아주 연한 아이보리색 */
-    }
-    /* 사이드바 배경색 변경 */
-    section[data-testid="stSidebar"] {
-        background-color: #F7F5E6;
-    }
-    /* 버튼 스타일 */
+    .stApp { background-color: #FDFCF0; }
+    section[data-testid="stSidebar"] { background-color: #F7F5E6; }
     .stButton > button {
         background-color: #FF4B4B;
         color: white;
@@ -273,7 +265,10 @@ def generate_day_html(target_date, data, cal_legend_info):
         if e_min > 1440: e_min = 1440 
         real_color = evt.get('real_color', '#cccccc')
         item = {'summary': evt.get('summary',''), 'cal': evt.get('calendar_name',''), 'bg': real_color}
-        item.update({'_s': s_min, '_e': e_min, '_dur': max(e_min - s_min, 15)})
+        
+        # [V71] 최소 높이 15 -> 30으로 상향 조정 (화면상 크기만 변경)
+        item.update({'_s': s_min, '_e': e_min, '_dur': max(e_min - s_min, 30)})
+        
         visual_events.append(item)
 
     timeline_items = calculate_visual_layout(visual_events)
@@ -308,11 +303,12 @@ def generate_day_html(target_date, data, cal_legend_info):
         top_px = (item['_s'] * PIXELS_PER_MIN) + TOP_OFFSET
         
         dur = item['_dur']
+        # [V71] 30분 미만은 이제 없으므로 5pt 폰트 로직은 사실상 안 쓰임
         if dur < 20: 
             font_size = get_scaled_size(5)
             line_height = '1.0' 
         elif dur < 40:
-            font_size = get_scaled_size(6.5)
+            font_size = get_scaled_size(6.5) # 이제 최소 30분이므로 여기부터 시작
             line_height = '1.1'
         else:
             font_size = get_scaled_size(8.5)
@@ -439,12 +435,10 @@ if service:
     with col2:
         end_d = st.date_input("종료 날짜", date.today())
 
-    # [Safety Warning] 100일 초과 시 경고
     if (end_d - start_d).days > 100:
-        st.warning("⚠️ 기간이 너무 깁니다(100일 초과). 서버 메모리 부족으로 멈출 수 있습니다. 1~3개월씩 나눠서 인쇄하는 것을 추천합니다.")
+        st.warning("⚠️ 기간이 너무 깁니다(100일 초과). 서버 메모리 부족으로 멈출 수 있습니다.")
 
     if st.button("🚀 일기책 만들기", type="primary"):
-        # ID 파싱
         raw_inputs = [x.strip() for x in manual.split(',') if x.strip()]
         final_ids = []
         custom_colors = {}

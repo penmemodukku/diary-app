@@ -1,10 +1,10 @@
 # ==========================================
-# [시온이네 일기장] V87 (Stability Fix)
+# [시온이네 일기장] V88 (Emotional Design)
 # ==========================================
-# 1. [Critical Fix] 'running header' 요소를 Flexbox(.content-wrapper) 밖으로 이동
-#    -> WeasyPrint의 'min-content width' TypeError 버그 회피
-# 2. [Visual] 2페이지부터 반복되는 헤더 기능 정상 작동 확인
-# 3. [유지] V85의 디자인 (할로 이펙트, 정렬 등) 100% 유지
+# 1. [Design] 폰트 변경: 고딕(NanumGothic) -> 명조(NanumMyeongjo) (책 같은 감성)
+# 2. [Design] 가로선 변경: 실선 -> 파선(Dashed) (가벼운 문구류 느낌)
+# 3. [Design] 모서리 변경: 2px -> 6px (부드럽고 친근한 느낌)
+# 4. [유지] V87의 모든 기능 (러닝 헤더, 할로 이펙트, 안정성 등)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -296,12 +296,13 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     
     for h in range(25):
         top = (h * 60 * PIXELS_PER_MIN) + TOP_OFFSET
+        
+        # [V88] 가로선: solid -> dashed
         html += f"<div class='grid-line' style='top:{top}px;'></div>"
         
         label_top = top - 7
         if h == 24: label_top = top - 10
         
-        # [V85 유지] White span + Transparent container
         span_style = "background-color:white; padding-right:2px;" 
         base_style = f"top:{label_top}px; left:0; width:30px; text-align:left; background-color:transparent; z-index:10;"
         
@@ -340,8 +341,6 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     for evt in timed: evt['is_allday'] = False; text_items_flat.append(evt)
     
     if text_items_flat:
-        # [V87 핵심 수정] Running Header를 content-wrapper 밖으로 꺼냄
-        # 이렇게 해야 Flex 계산에서 제외되어 에러가 안 남
         html += f"""
         <div class='date-header-running'>{date_str} (계속)</div>
         <div class='content-wrapper text-pages-wrapper'>
@@ -372,7 +371,6 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
     css_style = f"""
         @page {{ size: A4; margin: 1.5cm; }}
         
-        /* [V86 유지] Named page for text section with header area */
         @page text_layer {{
             margin-top: 2.0cm; 
             @top-center {{
@@ -381,7 +379,9 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
             }}
         }}
         
-        body {{ font-family: 'NanumGothic', sans-serif; color: #333; line-height: 1.35; font-size: {body_font}; }}
+        /* [V88] 폰트 변경: NanumGothic -> NanumMyeongjo */
+        body {{ font-family: 'NanumMyeongjo', serif; color: #333; line-height: 1.35; font-size: {body_font}; }}
+        
         .day-container {{ page-break-after: always; }}
         .first-page-container {{
             display: inline-block; width: 100%;
@@ -397,13 +397,14 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
         
-        .grid-line {{ position: absolute; left: 0; width: 100%; height: 1px; background-color: #bbb; z-index: 0; }}
+        /* [V88] 가로선 변경: border-top dashed (점선) */
+        .grid-line {{ position: absolute; left: 0; width: 100%; height: 0; border-top: 1px dashed #bbb; z-index: 0; }}
         
         .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: transparent; padding-right: 5px; z-index: 10; width: 30px; text-align: left; }}
         
-        .event-block {{ position: absolute; border-radius: 2px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 20; box-sizing: border-box; overflow: hidden; }}
+        /* [V88] 모서리 변경: border-radius 2px -> 6px */
+        .event-block {{ position: absolute; border-radius: 6px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 20; box-sizing: border-box; overflow: hidden; }}
         
-        /* [V86 유지] Running Header Style */
         .date-header-running {{ 
             position: running(headerContent); 
             font-size: 12pt; font-weight: bold; color: #5d4037; 
@@ -422,7 +423,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
             margin-bottom: 15px; padding-bottom: 5px; border-bottom: 1px solid #f9f9f9; width: 100%; 
             page-break-inside: auto; break-inside: auto; orphans: 1; widows: 1;
         }}
-        .allday-styled {{ background-color: #fff8e1; padding: 8px; border-radius: 4px; border-left: 3px solid; }}
+        .allday-styled {{ background-color: #fff8e1; padding: 8px; border-radius: 6px; border-left: 3px solid; }}
         .text-meta {{ display: block; font-size: {meta_font}; color: #888; font-weight: bold; margin-bottom: 1px; }}
         .text-title {{ display: block; font-size: {title_font}; font-weight: bold; margin-bottom: 3px; }}
         .text-desc {{ 

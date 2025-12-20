@@ -1,11 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V79 (Restored & Polished)
+# [시온이네 일기장] V80 (Left Align Perfect)
 # ==========================================
-# 1. [Critical Fix] 깨진 CSS(.grid-line) 복구 -> 회색 박스 제거, 가로선 부활
-# 2. [Layout] 격자선은 왼쪽 끝(0)에 맞추고, 이벤트 박스만 오른쪽으로 5% 밀어서 시간 숫자 보호
-# 3. [Visual] 가로선(#bbb)과 시간 숫자(#000) 진하게 강조
-# 4. [Legend] 범례 순서를 입력 순서(final_ids)와 동일하게 유지
-# 5. [유지] V77의 스마트 줄바꿈, 7.5pt 폰트, 30분 최소 높이
+# 1. [Visual] 시간표 숫자의 정렬을 '왼쪽(Left)'으로 변경하여 상단 가로선과 시작점 일치시킴
+# 2. [Layout] 이벤트 박스는 기존 위치(5% 여백) 고수 -> 숫자와 겹치지 않고 간격 확보
+# 3. [유지] V79의 모든 기능 (가로선 복구, 스마트 줄바꿈, 순서 정렬 등)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -298,22 +296,20 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     for h in range(25):
         top = (h * 60 * PIXELS_PER_MIN) + TOP_OFFSET
         
-        # [V79] CSS 클래스로 복구 (안정성 확보)
-        # 가로선은 100% 길이로 왼쪽 끝(0)에 붙여서 정렬 문제 해결
+        # Grid line: 꽉 찬 가로선
         html += f"<div class='grid-line' style='top:{top}px;'></div>"
         
         label_top = top - 7
         if h == 24: label_top = top - 10
         
-        # 시간 숫자는 왼쪽 끝(0)에 붙이되 z-index로 위로 올림
+        # [V80] text-align: left로 변경하여 왼쪽 벽에 붙임
         if h % 3 == 0 or h == 24: 
-             html += f"<div class='time-label' style='top:{label_top}px; color:#000; font-weight:bold;'>{h}</div>"
+             html += f"<div class='time-label' style='top:{label_top}px; color:#000; font-weight:bold; text-align:left;'>{h}</div>"
         else:
-             html += f"<div class='time-label' style='top:{label_top}px; font-size: 6pt; color:#666;'>{h}</div>"
+             html += f"<div class='time-label' style='top:{label_top}px; font-size: 6pt; color:#666; text-align:left;'>{h}</div>"
 
     for item in timeline_items:
-        # [V79] 이벤트 박스만 오른쪽으로 5% 밀기 (Safety Zone)
-        # 전체 100% 중 왼쪽 5%는 숫자 공간, 나머지 95%를 이벤트가 사용
+        # 5% 여백 유지
         GUTTER_PCT = 5.0
         w_pct = item['width'] * (100 - GUTTER_PCT) / 100
         l_pct = GUTTER_PCT + (item['left'] * (100 - GUTTER_PCT) / 100)
@@ -370,7 +366,6 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
     meta_font = get_scaled_size(7.5)
     title_font = get_scaled_size(10)
     
-    # [V79] CSS 복구 (grid-line 부활)
     css_style = f"""
         @page {{ size: A4; margin: 1.5cm; }}
         body {{ font-family: 'NanumGothic', sans-serif; color: #333; line-height: 1.35; font-size: {body_font}; }}
@@ -389,10 +384,10 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
         
-        /* [V79] grid-line 스타일 복구 & 진하게(#bbb) */
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 1px; background-color: #bbb; z-index: 0; }}
         
-        .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: white; padding-right: 5px; z-index: 1; width: 30px; text-align: right; }}
+        /* [V80] text-align: left로 변경 */
+        .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: white; padding-right: 5px; z-index: 1; width: 30px; text-align: left; }}
         
         .event-block {{ position: absolute; border-radius: 2px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 10; box-sizing: border-box; overflow: hidden; }}
         .date-header-manual {{ 

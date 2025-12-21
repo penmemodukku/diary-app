@@ -1,9 +1,10 @@
 # ==========================================
-# [시온이네 일기장] V91 (Final Margin & Stretch)
+# [시온이네 일기장] V92 (Gap Reduction & Glue Fix)
 # ==========================================
-# 1. [Stretch] 시간표 높이(COL_HEIGHT)를 880 -> 950으로 확장하여 하단 여백 최소화
-# 2. [Margin] 텍스트 페이지(@page text_layer) 상단 여백을 4.2cm로 늘려 첫 페이지와 높이 통일
-# 3. [유지] V90의 디자인 (고딕체, 파선, 할로 이펙트, 확장 헤더 등)
+# 1. [Margin] 텍스트 페이지 상단 여백을 4.2cm -> 2.5cm로 축소 (불필요한 공백 제거)
+# 2. [Break] 시간(meta)과 제목(title) 사이에 'break-after: avoid' 적용
+#    -> 페이지 끝에서 시간만 남고 제목이 넘어가는 현상 방지 (통째로 넘어감)
+# 3. [유지] V91의 시간표 확장(950px), 디자인 등 모든 기능 유지
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -244,7 +245,6 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     weekday_kr = ['월', '화', '수', '목', '금', '토', '일']
     date_str = f"{target_date.strftime('%Y-%m-%d')} ({weekday_kr[target_date.weekday()]})"
     
-    # [V91] 시간표 높이 확장: 880 -> 950 (A4 용지에 거의 꽉 차게)
     COL_HEIGHT = 950 
     PIXELS_PER_MIN = COL_HEIGHT / 1440
     TOP_OFFSET = 10
@@ -371,7 +371,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         @page {{ size: A4; margin: 1.5cm; }}
         
         @page text_layer {{
-            margin-top: 4.2cm; /* [V91] 여백 대폭 확장 (3.5 -> 4.2cm) */
+            margin-top: 2.5cm; /* [V92] 4.2 -> 2.5cm로 축소 (갭 줄이기) */
             @top-center {{
                 content: element(headerContent); 
                 width: 100%;
@@ -396,10 +396,8 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .legend-box {{ display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; border: 1px solid #ccc; }}
         .legend-text {{ font-size: 7pt; color: #666; }}
         
-        /* [V91] visual-page 높이 증가 */
         .visual-page {{ width: 100%; height: 970px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         
-        /* [V91] timeline-col 높이 증가 */
         .timeline-col {{ position: absolute; top: 10px; height: 950px; width: 100%; box-sizing: border-box; }}
         
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 0; border-top: 1px dashed #bbb; z-index: 0; }}
@@ -423,13 +421,17 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .content-wrapper {{ display: flex; width: 100%; }} 
         .text-column {{ width: 75%; padding-right: 2%; }} 
         .memo-column {{ width: 23%; }} 
+        
         .text-item {{ 
             margin-bottom: 15px; padding-bottom: 5px; border-bottom: 1px solid #f9f9f9; width: 100%; 
             page-break-inside: auto; break-inside: auto; orphans: 1; widows: 1;
         }}
         .allday-styled {{ background-color: #fff8e1; padding: 8px; border-radius: 6px; border-left: 3px solid; }}
-        .text-meta {{ display: block; font-size: {meta_font}; color: #888; font-weight: bold; margin-bottom: 1px; }}
-        .text-title {{ display: block; font-size: {title_font}; font-weight: bold; margin-bottom: 3px; }}
+        
+        /* [V92] break-after: avoid 추가하여 제목과 헤어지는 것 방지 */
+        .text-meta {{ display: block; font-size: {meta_font}; color: #888; font-weight: bold; margin-bottom: 1px; break-after: avoid; page-break-after: avoid; }}
+        .text-title {{ display: block; font-size: {title_font}; font-weight: bold; margin-bottom: 3px; break-after: avoid; page-break-after: avoid; }}
+        
         .text-desc {{ 
             font-size: {body_font}; color: #444; white-space: pre-wrap; line-height: 1.5; word-break: break-all; overflow-wrap: break-word; 
             break-inside: auto; 

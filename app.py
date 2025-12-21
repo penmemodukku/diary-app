@@ -1,9 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V90 (Perfect Margin Sync - Final)
+# [시온이네 일기장] V91 (Final Margin & Stretch)
 # ==========================================
-# 1. [Critical Fix] 텍스트 페이지(@page text_layer)의 상단 여백을 1.5cm -> 3.5cm로 대폭 확장
-#    -> 헤더가 차지하는 공간만큼 물리적 여백을 확보하여 본문 시작 위치를 첫 페이지와 일치시킴
-# 2. [유지] V89의 모든 디자인 (고딕체, 파선, 둥근 모서리, 러닝 헤더 등) 100% 유지
+# 1. [Stretch] 시간표 높이(COL_HEIGHT)를 880 -> 950으로 확장하여 하단 여백 최소화
+# 2. [Margin] 텍스트 페이지(@page text_layer) 상단 여백을 4.2cm로 늘려 첫 페이지와 높이 통일
+# 3. [유지] V90의 디자인 (고딕체, 파선, 할로 이펙트, 확장 헤더 등)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -244,7 +244,8 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     weekday_kr = ['월', '화', '수', '목', '금', '토', '일']
     date_str = f"{target_date.strftime('%Y-%m-%d')} ({weekday_kr[target_date.weekday()]})"
     
-    COL_HEIGHT = 880 
+    # [V91] 시간표 높이 확장: 880 -> 950 (A4 용지에 거의 꽉 차게)
+    COL_HEIGHT = 950 
     PIXELS_PER_MIN = COL_HEIGHT / 1440
     TOP_OFFSET = 10
     
@@ -370,14 +371,13 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         @page {{ size: A4; margin: 1.5cm; }}
         
         @page text_layer {{
-            margin-top: 3.5cm; /* [V90] 상단 여백 대폭 확장 (1.5cm -> 3.5cm) */
+            margin-top: 4.2cm; /* [V91] 여백 대폭 확장 (3.5 -> 4.2cm) */
             @top-center {{
                 content: element(headerContent); 
                 width: 100%;
             }}
         }}
         
-        /* [V90 유지] NanumGothic */
         body {{ font-family: 'NanumGothic', sans-serif; color: #333; line-height: 1.35; font-size: {body_font}; }}
         
         .day-container {{ page-break-after: always; }}
@@ -395,8 +395,12 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .legend-row {{ display: flex; align-items: center; justify-content: flex-end; margin-bottom: 2px; }}
         .legend-box {{ display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; border: 1px solid #ccc; }}
         .legend-text {{ font-size: 7pt; color: #666; }}
-        .visual-page {{ width: 100%; height: 900px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
-        .timeline-col {{ position: absolute; top: 10px; height: 880px; width: 100%; box-sizing: border-box; }}
+        
+        /* [V91] visual-page 높이 증가 */
+        .visual-page {{ width: 100%; height: 970px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
+        
+        /* [V91] timeline-col 높이 증가 */
+        .timeline-col {{ position: absolute; top: 10px; height: 950px; width: 100%; box-sizing: border-box; }}
         
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 0; border-top: 1px dashed #bbb; z-index: 0; }}
         

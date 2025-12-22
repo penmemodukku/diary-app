@@ -1,10 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V92 (Gap Reduction & Glue Fix)
+# [시온이네 일기장] V93 (True Color Fix)
 # ==========================================
-# 1. [Margin] 텍스트 페이지 상단 여백을 4.2cm -> 2.5cm로 축소 (불필요한 공백 제거)
-# 2. [Break] 시간(meta)과 제목(title) 사이에 'break-after: avoid' 적용
-#    -> 페이지 끝에서 시간만 남고 제목이 넘어가는 현상 방지 (통째로 넘어감)
-# 3. [유지] V91의 시간표 확장(950px), 디자인 등 모든 기능 유지
+# 1. [Color Fix] 구글 표준 이벤트 색상(1~11번) 코드를 내장(Fallback)하여,
+#    API가 색상 정보를 못 가져와도 개별 항목의 색상 변경이 확실히 적용되도록 수정
+# 2. [유지] V92의 모든 기능 (여백 2.5cm, 항목 분리 방지, 950px 시간표 등)
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -75,6 +74,21 @@ def normalize_color(color_input):
 # --- [4. 로직] ---
 KST = timezone(timedelta(hours=9))
 
+# [V93] 구글 캘린더 표준 이벤트 색상표 (Fallback용)
+FALLBACK_EVENT_COLORS = {
+    '1': '#7986cb', # Lavender
+    '2': '#33b679', # Sage
+    '3': '#8e24aa', # Grape
+    '4': '#e67c73', # Flamingo
+    '5': '#f6c026', # Banana
+    '6': '#f5511d', # Tangerine
+    '7': '#039be5', # Peacock
+    '8': '#616161', # Graphite
+    '9': '#3f51b5', # Blueberry
+    '10': '#0b8043', # Basil
+    '11': '#d60000'  # Tomato
+}
+
 def force_break_text(text):
     if not text: return ""
     chunk_size = 15
@@ -90,6 +104,7 @@ def get_google_colors(service):
 def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date):
     if not target_ids: return {}, {}, ["❌ 캘린더 ID를 입력해주세요."]
     
+    # API에서 색상 정보를 가져오지만, 실패할 경우를 대비
     cal_colors_map, event_colors_map = get_google_colors(service)
     
     start_dt = datetime.combine(start_date, datetime.min.time()) - timedelta(days=1)
@@ -127,11 +142,21 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
                 for event in items:
                     event['calendar_id'] = cal_id
                     event['calendar_name'] = cal_name
-                    evt_color_id = event.get('colorId')
-                    if evt_color_id and evt_color_id in event_colors_map:
-                        event['real_color'] = event_colors_map[evt_color_id]['background']
-                    else:
-                        event['real_color'] = default_color
+                    
+                    # [V93] 색상 결정 로직 강화
+                    evt_color_id = event.get('colorId') # 개별 항목 색상 ID (예: '11')
+                    
+                    final_color = default_color # 기본은 캘린더 색상
+                    
+                    if evt_color_id:
+                        # 1순위: API에서 가져온 매핑 정보 확인
+                        if evt_color_id in event_colors_map:
+                            final_color = event_colors_map[evt_color_id]['background']
+                        # 2순위: API 매핑 실패 시, 내장된 표준 색상표(Fallback) 사용
+                        elif evt_color_id in FALLBACK_EVENT_COLORS:
+                            final_color = FALLBACK_EVENT_COLORS[evt_color_id]
+                    
+                    event['real_color'] = final_color
                     all_events.append(event)
                 log_msg.append(f"✅ [{cal_name}] : {len(items)}개")
             else:
@@ -371,7 +396,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         @page {{ size: A4; margin: 1.5cm; }}
         
         @page text_layer {{
-            margin-top: 2.5cm; /* [V92] 4.2 -> 2.5cm로 축소 (갭 줄이기) */
+            margin-top: 2.5cm; 
             @top-center {{
                 content: element(headerContent); 
                 width: 100%;
@@ -397,7 +422,6 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .legend-text {{ font-size: 7pt; color: #666; }}
         
         .visual-page {{ width: 100%; height: 970px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
-        
         .timeline-col {{ position: absolute; top: 10px; height: 950px; width: 100%; box-sizing: border-box; }}
         
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 0; border-top: 1px dashed #bbb; z-index: 0; }}
@@ -428,7 +452,6 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         }}
         .allday-styled {{ background-color: #fff8e1; padding: 8px; border-radius: 6px; border-left: 3px solid; }}
         
-        /* [V92] break-after: avoid 추가하여 제목과 헤어지는 것 방지 */
         .text-meta {{ display: block; font-size: {meta_font}; color: #888; font-weight: bold; margin-bottom: 1px; break-after: avoid; page-break-after: avoid; }}
         .text-title {{ display: block; font-size: {title_font}; font-weight: bold; margin-bottom: 3px; break-after: avoid; page-break-after: avoid; }}
         

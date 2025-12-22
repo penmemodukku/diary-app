@@ -1,9 +1,9 @@
 # ==========================================
-# [시온이네 일기장] V93 (True Color Fix)
+# [시온이네 일기장] V93 (Final Masterpiece - Restored)
 # ==========================================
-# 1. [Color Fix] 구글 표준 이벤트 색상(1~11번) 코드를 내장(Fallback)하여,
-#    API가 색상 정보를 못 가져와도 개별 항목의 색상 변경이 확실히 적용되도록 수정
-# 2. [유지] V92의 모든 기능 (여백 2.5cm, 항목 분리 방지, 950px 시간표 등)
+# 1. [Logic] V94의 해시태그 기능 제거 -> V93 로직으로 원상 복구
+# 2. [Color] 구글 표준 이벤트 색상 코드 내장(Fallback) 유지 -> 캘린더별 색상 표현 정확도 확보
+# 3. [Design] 고딕체, 파선, 할로 이펙트, 2.5cm 여백, 러닝 헤더 등 모든 디자인 요소 유지
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -104,7 +104,6 @@ def get_google_colors(service):
 def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date):
     if not target_ids: return {}, {}, ["❌ 캘린더 ID를 입력해주세요."]
     
-    # API에서 색상 정보를 가져오지만, 실패할 경우를 대비
     cal_colors_map, event_colors_map = get_google_colors(service)
     
     start_dt = datetime.combine(start_date, datetime.min.time()) - timedelta(days=1)
@@ -143,16 +142,13 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
                     event['calendar_id'] = cal_id
                     event['calendar_name'] = cal_name
                     
-                    # [V93] 색상 결정 로직 강화
-                    evt_color_id = event.get('colorId') # 개별 항목 색상 ID (예: '11')
-                    
-                    final_color = default_color # 기본은 캘린더 색상
+                    # [V93] 색상 결정 로직 (Fallback 포함)
+                    evt_color_id = event.get('colorId')
+                    final_color = default_color
                     
                     if evt_color_id:
-                        # 1순위: API에서 가져온 매핑 정보 확인
                         if evt_color_id in event_colors_map:
                             final_color = event_colors_map[evt_color_id]['background']
-                        # 2순위: API 매핑 실패 시, 내장된 표준 색상표(Fallback) 사용
                         elif evt_color_id in FALLBACK_EVENT_COLORS:
                             final_color = FALLBACK_EVENT_COLORS[evt_color_id]
                     

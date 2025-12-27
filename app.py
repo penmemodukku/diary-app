@@ -1,9 +1,10 @@
 # ==========================================
-# [시온이네 일기장] V93 (Final Masterpiece - Restored)
+# [시온이네 일기장] V95 (Overnight Event Fix)
 # ==========================================
-# 1. [Logic] V94의 해시태그 기능 제거 -> V93 로직으로 원상 복구
-# 2. [Color] 구글 표준 이벤트 색상 코드 내장(Fallback) 유지 -> 캘린더별 색상 표현 정확도 확보
-# 3. [Design] 고딕체, 파선, 할로 이펙트, 2.5cm 여백, 러닝 헤더 등 모든 디자인 요소 유지
+# 1. [Logic Fix] 날짜를 넘어가는 일정(예: 전날 23시 ~ 금일 09시)이 '오늘' 목록에도 포함되도록 로직 수정
+#    -> 시작일과 종료일 사이의 모든 날짜에 이벤트를 할당 (Overlap Check)
+# 2. [Visual Fix] 타임라인 그릴 때, 전날 시작된 일정은 '0시 0분'부터 시작하도록 시작점 보정 (Clamping)
+# 3. [Base] V94(해시태그) 폐기하고 V93(완성형 디자인) 기반으로 작업
 
 import streamlit as st
 from weasyprint import HTML, CSS
@@ -74,19 +75,11 @@ def normalize_color(color_input):
 # --- [4. 로직] ---
 KST = timezone(timedelta(hours=9))
 
-# [V93] 구글 캘린더 표준 이벤트 색상표 (Fallback용)
+# 구글 캘린더 표준 이벤트 색상표 (Fallback용)
 FALLBACK_EVENT_COLORS = {
-    '1': '#7986cb', # Lavender
-    '2': '#33b679', # Sage
-    '3': '#8e24aa', # Grape
-    '4': '#e67c73', # Flamingo
-    '5': '#f6c026', # Banana
-    '6': '#f5511d', # Tangerine
-    '7': '#039be5', # Peacock
-    '8': '#616161', # Graphite
-    '9': '#3f51b5', # Blueberry
-    '10': '#0b8043', # Basil
-    '11': '#d60000'  # Tomato
+    '1': '#7986cb', '2': '#33b679', '3': '#8e24aa', '4': '#e67c73',
+    '5': '#f6c026', '6': '#f5511d', '7': '#039be5', '8': '#616161',
+    '9': '#3f51b5', '10': '#0b8043', '11': '#d60000'
 }
 
 def force_break_text(text):
@@ -106,10 +99,11 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
     
     cal_colors_map, event_colors_map = get_google_colors(service)
     
-    start_dt = datetime.combine(start_date, datetime.min.time()) - timedelta(days=1)
-    end_dt = datetime.combine(end_date, datetime.max.time()) + timedelta(days=1)
-    time_min = start_dt.isoformat() + 'Z'
-    time_max = end_dt.isoformat() + 'Z'
+    # 검색 범위: 시작일 전날 ~ 종료일 다음날 (안전하게)
+    search_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=1)
+    search_end = datetime.combine(end_date, datetime.max.time()) + timedelta(days=1)
+    time_min = search_start.isoformat() + 'Z'
+    time_max = search_end.isoformat() + 'Z'
 
     all_events = []
     log_msg = []
@@ -142,16 +136,14 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
                     event['calendar_id'] = cal_id
                     event['calendar_name'] = cal_name
                     
-                    # [V93] 색상 결정 로직 (Fallback 포함)
+                    # 색상 결정 (V93 로직)
                     evt_color_id = event.get('colorId')
                     final_color = default_color
-                    
                     if evt_color_id:
                         if evt_color_id in event_colors_map:
                             final_color = event_colors_map[evt_color_id]['background']
                         elif evt_color_id in FALLBACK_EVENT_COLORS:
                             final_color = FALLBACK_EVENT_COLORS[evt_color_id]
-                    
                     event['real_color'] = final_color
                     all_events.append(event)
                 log_msg.append(f"✅ [{cal_name}] : {len(items)}개")
@@ -162,6 +154,7 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
             log_msg.append(f"❌ [{cal_id}] 접근 불가: 로봇 공유 확인 필요")
             continue
 
+    # [V95 핵심 로직] 날짜별 그룹핑 (Overnight 지원)
     daily_groups = {}
     curr = start_date
     while curr <= end_date:
@@ -170,34 +163,67 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
 
     for event in all_events:
         start = event['start']
+        # 1. 종일 일정 처리
         if 'date' in start:
             try:
                 evt_date = datetime.strptime(start['date'], '%Y-%m-%d').date()
-                if start_date <= evt_date <= end_date:
-                    daily_groups[evt_date]['allday'].append(event)
+                end_date_str = event['end'].get('date')
+                # 종일 일정은 종료일이 '다음날 0시'로 표기됨. 따라서 실제 종료일은 -1일
+                evt_end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date() - timedelta(days=1)
+                
+                # 종일 일정도 여러 날에 걸칠 수 있음
+                iter_date = evt_date
+                while iter_date <= evt_end_date:
+                    if start_date <= iter_date <= end_date:
+                        daily_groups[iter_date]['allday'].append(event)
+                    iter_date += timedelta(days=1)
             except: pass
+            
+        # 2. 시간 일정 처리 (수면 시간 등)
         elif 'dateTime' in start:
             try:
-                dt_obj = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
-                dt_kst = dt_obj.astimezone(KST)
-                event['dt_object'] = dt_kst
-                evt_date = dt_kst.date()
-                if start_date <= evt_date <= end_date:
-                    daily_groups[evt_date]['timed'].append(event)
+                # 시작/종료 시간 파싱 (KST 변환)
+                dt_start = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00')).astimezone(KST)
+                event['dt_object'] = dt_start # 원본 시작 시간 저장
+                
+                end_str = event['end'].get('dateTime')
+                dt_end = datetime.fromisoformat(end_str.replace('Z', '+00:00')).astimezone(KST)
+                event['dt_end_object'] = dt_end # 원본 종료 시간 저장
+
+                # 이 이벤트가 '걸쳐있는' 모든 날짜를 찾아서 daily_groups에 넣기
+                # 이벤트 시작일의 0시 0분
+                curr_loop_dt = dt_start.date()
+                end_loop_dt = dt_end.date()
+                
+                # 만약 종료 시간이 00:00:00 이라면, 날짜 상으로는 전날까지만 포함된 것으로 봄
+                if dt_end.hour == 0 and dt_end.minute == 0 and dt_end.second == 0:
+                    end_loop_dt -= timedelta(days=1)
+
+                while curr_loop_dt <= end_loop_dt:
+                    if start_date <= curr_loop_dt <= end_date:
+                        # 해당 날짜에 이벤트 추가
+                        # 주의: 객체를 그대로 넣으면 참조가 복사되므로, 렌더링 시 날짜별로 시간을 다르게 계산해야 함
+                        daily_groups[curr_loop_dt]['timed'].append(event)
+                    curr_loop_dt += timedelta(days=1)
+                    
             except: pass
             
     for d in daily_groups:
+        # 정렬: 그 날짜의 '표시될 시작 시간' 기준이 아니라, '원래 이벤트 시작 시간' 순서로 정렬
         daily_groups[d]['timed'].sort(key=lambda x: x['dt_object'])
             
     return daily_groups, cal_legend_info, log_msg
 
 def calculate_visual_layout(events):
     if not events: return []
+    # _s (시작 분) 기준으로 정렬
     sorted_events = sorted(events, key=lambda x: x['_s'])
     clusters = []
     if not sorted_events: return []
+    
     current_cluster = [sorted_events[0]]
     cluster_end = sorted_events[0]['_e']
+    
     for i in range(1, len(sorted_events)):
         evt = sorted_events[i]
         if evt['_s'] < cluster_end:
@@ -208,8 +234,10 @@ def calculate_visual_layout(events):
             current_cluster = [evt]
             cluster_end = evt['_e']
     clusters.append(current_cluster)
+    
     final_items = []
     for cluster in clusters:
+        # 클러스터 내에서 다시 정렬 (시작 시간 빠른 순, 길이는 긴 순)
         cluster_sorted = sorted(cluster, key=lambda x: (x['_s'], -x['_dur']))
         lanes = [] 
         for evt in cluster_sorted:
@@ -222,6 +250,7 @@ def calculate_visual_layout(events):
                     break
             if not placed:
                 lanes.append([evt])
+        
         total_lanes = len(lanes)
         for i, lane in enumerate(lanes):
             for evt in lane:
@@ -232,8 +261,11 @@ def calculate_visual_layout(events):
 
 def get_time_info(event):
     start_dt = event['dt_object']
-    end_dt = datetime.fromisoformat(event['end'].get('dateTime').replace('Z', '+00:00')).astimezone(KST)
+    end_dt = event['dt_end_object']
+    
+    # 단순 표기용 텍스트 (원본 시간 그대로 표시)
     time_range = f"{start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')}"
+    
     duration = end_dt - start_dt
     total_seconds = int(duration.total_seconds())
     h, r = divmod(total_seconds, 3600)
@@ -242,6 +274,13 @@ def get_time_info(event):
     if h > 0: dur_str.append(f"{h}h")
     if m > 0: dur_str.append(f"{m}m")
     if not dur_str: dur_str.append("0m")
+    
+    # 날짜가 다르면 표시 (예: +1)
+    if start_dt.date() != end_dt.date():
+        days_diff = (end_dt.date() - start_dt.date()).days
+        if days_diff > 0:
+             time_range += f" (+{days_diff})"
+             
     return time_range, " ".join(dur_str)
 
 # --- [5. PDF 생성] ---
@@ -282,16 +321,38 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     legend_html += "</div>"
 
     visual_events = []
+    
+    # [V95] 타임라인 시각화 로직 수정 (Clamping)
+    # 현재 그리는 날짜(target_date)의 00:00 ~ 24:00 기준
+    day_start_dt = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=KST)
+    day_end_dt = day_start_dt + timedelta(days=1)
+
     for evt in timed:
-        start = evt['dt_object']
-        end = datetime.fromisoformat(evt['end'].get('dateTime').replace('Z', '+00:00')).astimezone(KST)
-        s_min = start.hour * 60 + start.minute
-        e_min = end.hour * 60 + end.minute
-        if e_min > 1440: e_min = 1440 
+        evt_start = evt['dt_object']
+        evt_end = evt['dt_end_object']
+        
+        # 1. 시각화용 시작/종료 시간 계산 (Clamping)
+        # 이벤트가 어제 시작했으면, 오늘 0시부터 시작한 것으로 간주
+        vis_start = max(evt_start, day_start_dt)
+        # 이벤트가 내일 끝나면, 오늘 24시까지만 그리기
+        vis_end = min(evt_end, day_end_dt)
+        
+        # 만약 계산된 시작 >= 종료라면 (오류 방지), 그리지 않음
+        if vis_start >= vis_end:
+            continue
+
+        # 분 단위 변환 (오늘 0시 기준)
+        s_min = (vis_start - day_start_dt).total_seconds() / 60
+        e_min = (vis_end - day_start_dt).total_seconds() / 60
+        
+        # 좌표 계산
+        if e_min > 1440: e_min = 1440 # 안전장치
+        
         real_color = evt.get('real_color', '#cccccc')
         item = {'summary': evt.get('summary',''), 'cal': evt.get('calendar_name',''), 'bg': real_color}
         
-        visual_duration = max(e_min - s_min, 30)
+        visual_duration = max(e_min - s_min, 30) # 최소 높이 보장
+        
         item.update({
             '_s': s_min,
             '_e': s_min + visual_duration, 

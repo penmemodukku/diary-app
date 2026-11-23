@@ -93,3 +93,531 @@ def get_google_colors(service):
         return colors.get('calendar', {}), colors.get('event', {})
     except:
         return {}, {}
+
+def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date):
+    if not target_ids: return {}, {}, ["❌ 캘린더 ID를 입력해주세요."]
+    
+    cal_colors_map, event_colors_map = get_google_colors(service)
+    
+    # 검색 범위: 시작일 전날 ~ 종료일 다음날 (안전하게)
+    search_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=1)
+    search_end = datetime.combine(end_date, datetime.max.time()) + timedelta(days=1)
+    time_min = search_start.isoformat() + 'Z'
+    time_max = search_end.isoformat() + 'Z'
+
+    all_events = []
+    log_msg = []
+    cal_legend_info = {}
+
+    for cal_id in target_ids:
+        cal_id = cal_id.strip() 
+        if not cal_id: continue
+        
+        try:
+            cal_info = service.calendars().get(calendarId=cal_id).execute()
+            cal_name = cal_info.get('summary', cal_id)
+            
+            if cal_id in custom_colors:
+                default_color = custom_colors[cal_id]
+            else:
+                cal_color_id = cal_info.get('colorId', '1') 
+                default_color = cal_colors_map.get(cal_color_id, {'background': '#a4bdfc'})['background']
+            
+            cal_legend_info[cal_id] = {'name': cal_name, 'color': default_color}
+
+            events_result = service.events().list(
+                calendarId=cal_id, timeMin=time_min, timeMax=time_max,
+                maxResults=2500, singleEvents=True, orderBy='startTime'
+            ).execute()
+            
+            items = events_result.get('items', [])
+            if items:
+                for event in items:
+                    event['calendar_id'] = cal_id
+                    event['calendar_name'] = cal_name
+                    
+                    # 색상 결정 (V93 로직)
+                    evt_color_id = event.get('colorId')
+                    final_color = default_color
+                    if evt_color_id:
+                        if evt_color_id in event_colors_map:
+                            final_color = event_colors_map[evt_color_id]['background']
+                        elif evt_color_id in FALLBACK_EVENT_COLORS:
+                            final_color = FALLBACK_EVENT_COLORS[evt_color_id]
+                    event['real_color'] = final_color
+                    all_events.append(event)
+                log_msg.append(f"✅ [{cal_name}] : {len(items)}개")
+            else:
+                log_msg.append(f"⚠️ [{cal_name}] : 일정 없음")
+                
+        except Exception as e:
+            log_msg.append(f"❌ [{cal_id}] 접근 불가: 로봇 공유 확인 필요")
+            continue
+
+    # [V95 핵심 로직] 날짜별 그룹핑 (Overnight 지원)
+    daily_groups = {}
+    curr = start_date
+    while curr <= end_date:
+        daily_groups[curr] = {'allday': [], 'timed': []}
+        curr += timedelta(days=1)
+
+    for event in all_events:
+        start = event['start']
+        # 1. 종일 일정 처리
+        if 'date' in start:
+            try:
+                evt_date = datetime.strptime(start['date'], '%Y-%m-%d').date()
+                end_date_str = event['end'].get('date')
+                # 종일 일정은 종료일이 '다음날 0시'로 표기됨. 따라서 실제 종료일은 -1일
+                evt_end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date() - timedelta(days=1)
+                
+                # 종일 일정도 여러 날에 걸칠 수 있음
+                iter_date = evt_date
+                while iter_date <= evt_end_date:
+                    if start_date <= iter_date <= end_date:
+                        daily_groups[iter_date]['allday'].append(event)
+                    iter_date += timedelta(days=1)
+            except: pass
+            
+        # 2. 시간 일정 처리 (수면 시간 등)
+        elif 'dateTime' in start:
+            try:
+                # 시작/종료 시간 파싱 (KST 변환)
+                dt_start = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00')).astimezone(KST)
+                event['dt_object'] = dt_start # 원본 시작 시간 저장
+                
+                end_str = event['end'].get('dateTime')
+                dt_end = datetime.fromisoformat(end_str.replace('Z', '+00:00')).astimezone(KST)
+                event['dt_end_object'] = dt_end # 원본 종료 시간 저장
+
+                # 이 이벤트가 '걸쳐있는' 모든 날짜를 찾아서 daily_groups에 넣기
+                # 이벤트 시작일의 0시 0분
+                curr_loop_dt = dt_start.date()
+                end_loop_dt = dt_end.date()
+                
+                # 만약 종료 시간이 00:00:00 이라면, 날짜 상으로는 전날까지만 포함된 것으로 봄
+                if dt_end.hour == 0 and dt_end.minute == 0 and dt_end.second == 0:
+                    end_loop_dt -= timedelta(days=1)
+
+                while curr_loop_dt <= end_loop_dt:
+                    if start_date <= curr_loop_dt <= end_date:
+                        # 해당 날짜에 이벤트 추가
+                        # 주의: 객체를 그대로 넣으면 참조가 복사되므로, 렌더링 시 날짜별로 시간을 다르게 계산해야 함
+                        daily_groups[curr_loop_dt]['timed'].append(event)
+                    curr_loop_dt += timedelta(days=1)
+                    
+            except: pass
+            
+    for d in daily_groups:
+        # 정렬: 그 날짜의 '표시될 시작 시간' 기준이 아니라, '원래 이벤트 시작 시간' 순서로 정렬
+        daily_groups[d]['timed'].sort(key=lambda x: x['dt_object'])
+            
+    return daily_groups, cal_legend_info, log_msg
+
+def calculate_visual_layout(events):
+    if not events: return []
+    # _s (시작 분) 기준으로 정렬
+    sorted_events = sorted(events, key=lambda x: x['_s'])
+    clusters = []
+    if not sorted_events: return []
+    
+    current_cluster = [sorted_events[0]]
+    cluster_end = sorted_events[0]['_e']
+    
+    for i in range(1, len(sorted_events)):
+        evt = sorted_events[i]
+        if evt['_s'] < cluster_end:
+            current_cluster.append(evt)
+            cluster_end = max(cluster_end, evt['_e'])
+        else:
+            clusters.append(current_cluster)
+            current_cluster = [evt]
+            cluster_end = evt['_e']
+    clusters.append(current_cluster)
+    
+    final_items = []
+    for cluster in clusters:
+        # 클러스터 내에서 다시 정렬 (시작 시간 빠른 순, 길이는 긴 순)
+        cluster_sorted = sorted(cluster, key=lambda x: (x['_s'], -x['_dur']))
+        lanes = [] 
+        for evt in cluster_sorted:
+            placed = False
+            for lane in lanes:
+                last_evt = lane[-1]
+                if evt['_s'] >= last_evt['_e']:
+                    lane.append(evt)
+                    placed = True
+                    break
+            if not placed:
+                lanes.append([evt])
+        
+        total_lanes = len(lanes)
+        for i, lane in enumerate(lanes):
+            for evt in lane:
+                evt['width'] = 100 / total_lanes
+                evt['left'] = i * (100 / total_lanes)
+                final_items.append(evt)
+    return final_items
+
+def get_time_info(event):
+    start_dt = event['dt_object']
+    end_dt = event['dt_end_object']
+    
+    # 단순 표기용 텍스트 (원본 시간 그대로 표시)
+    time_range = f"{start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')}"
+    
+    duration = end_dt - start_dt
+    total_seconds = int(duration.total_seconds())
+    h, r = divmod(total_seconds, 3600)
+    m = r // 60
+    dur_str = []
+    if h > 0: dur_str.append(f"{h}h")
+    if m > 0: dur_str.append(f"{m}m")
+    if not dur_str: dur_str.append("0m")
+    
+    # 날짜가 다르면 표시 (예: +1)
+    if start_dt.date() != end_dt.date():
+        days_diff = (end_dt.date() - start_dt.date()).days
+        if days_diff > 0:
+             time_range += f" (+{days_diff})"
+             
+    return time_range, " ".join(dur_str)
+
+# --- [5. PDF 생성] ---
+FONT_SCALE = 1.0
+
+def get_scaled_size(pt):
+    return f"{pt * FONT_SCALE}pt"
+
+def estimate_height(desc, is_title=False):
+    if not desc: return 0
+    lines = desc.count('\\n') + 1
+    chars_per_line = 40 / FONT_SCALE 
+    lines += len(desc) / chars_per_line
+    base = 25 if is_title else 0 
+    line_height = 16 * FONT_SCALE
+    return base + (lines * line_height) + 10 
+
+def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
+    allday = data['allday']
+    timed = data['timed']
+    if not allday and not timed: return ""
+    weekday_kr = ['월', '화', '수', '목', '금', '토', '일']
+    date_str = f"{target_date.strftime('%Y-%m-%d')} ({weekday_kr[target_date.weekday()]})"
+    
+    COL_HEIGHT = 950 
+    PIXELS_PER_MIN = COL_HEIGHT / 1440
+    TOP_OFFSET = 10
+    
+    used_cal_ids = set()
+    for evt in allday + timed: used_cal_ids.add(evt.get('calendar_id'))
+    
+    legend_html = "<div class='legend-container'>"
+    for cal_id in ordered_ids:
+        if cal_id in used_cal_ids:
+            info = cal_legend_info.get(cal_id)
+            if info: 
+                legend_html += f"<div class='legend-row'><span class='legend-box' style='background-color:{info['color']}'></span><span class='legend-text'>{info['name']}</span></div>"
+    legend_html += "</div>"
+
+    visual_events = []
+    
+    # [V95] 타임라인 시각화 로직 수정 (Clamping)
+    # 현재 그리는 날짜(target_date)의 00:00 ~ 24:00 기준
+    day_start_dt = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=KST)
+    day_end_dt = day_start_dt + timedelta(days=1)
+
+    for evt in timed:
+        evt_start = evt['dt_object']
+        evt_end = evt['dt_end_object']
+        
+        # 1. 시각화용 시작/종료 시간 계산 (Clamping)
+        # 이벤트가 어제 시작했으면, 오늘 0시부터 시작한 것으로 간주
+        vis_start = max(evt_start, day_start_dt)
+        # 이벤트가 내일 끝나면, 오늘 24시까지만 그리기
+        vis_end = min(evt_end, day_end_dt)
+        
+        # 만약 계산된 시작 >= 종료라면 (오류 방지), 그리지 않음
+        if vis_start >= vis_end:
+            continue
+
+        # 분 단위 변환 (오늘 0시 기준)
+        s_min = (vis_start - day_start_dt).total_seconds() / 60
+        e_min = (vis_end - day_start_dt).total_seconds() / 60
+        
+        # 좌표 계산
+        if e_min > 1440: e_min = 1440 # 안전장치
+        
+        real_color = evt.get('real_color', '#cccccc')
+        item = {'summary': evt.get('summary',''), 'cal': evt.get('calendar_name',''), 'bg': real_color}
+        
+        visual_duration = max(e_min - s_min, 30) # 최소 높이 보장
+        
+        item.update({
+            '_s': s_min,
+            '_e': s_min + visual_duration, 
+            '_dur': visual_duration
+        })
+        visual_events.append(item)
+
+    timeline_items = calculate_visual_layout(visual_events)
+
+    html = f"""
+    <div class='day-container'>
+        <div class='first-page-container'>
+            <div class='header-wrapper-full'>
+                <div class='date-header'>{date_str}</div>
+                {legend_html}
+            </div>
+            <div class='header-line-full'></div>
+            
+            <div class='content-wrapper'>
+                <div class='text-column'> 
+                    <div class='visual-page'>
+                        <div class='timeline-col'>
+    """
+    
+    for h in range(25):
+        top = (h * 60 * PIXELS_PER_MIN) + TOP_OFFSET
+        html += f"<div class='grid-line' style='top:{top}px;'></div>"
+        
+        label_top = top - 7
+        if h == 24: label_top = top - 10
+        
+        span_style = "background-color:white; padding-right:2px;" 
+        base_style = f"top:{label_top}px; left:0; width:30px; text-align:left; background-color:transparent; z-index:10;"
+        
+        if h % 3 == 0 or h == 24: 
+             html += f"<div class='time-label' style='{base_style}'><span style='{span_style} color:#000; font-weight:bold;'>{h}</span></div>"
+        else:
+             html += f"<div class='time-label' style='{base_style}'><span style='{span_style} font-size:6pt; color:#666;'>{h}</span></div>"
+
+    for item in timeline_items:
+        GUTTER_PCT = 6.0
+        w_pct = item['width'] * (100 - GUTTER_PCT) / 100
+        l_pct = GUTTER_PCT + (item['left'] * (100 - GUTTER_PCT) / 100)
+        
+        top_px = (item['_s'] * PIXELS_PER_MIN) + TOP_OFFSET
+        font_size = get_scaled_size(7.5)
+        line_height = '1.2'
+        
+        if item['_dur'] <= 30:
+            wrap_style = "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+        else:
+            wrap_style = "white-space: normal; overflow: hidden;"
+        
+        html += f"<div class='event-block' style='top:{top_px}px; height:{item['_dur']*PIXELS_PER_MIN}px; left:{l_pct}%; width:{w_pct}%; background-color:{item['bg']}40; border-left:3px solid {item['bg']}; color:#333; font-size:{font_size}; line-height:{line_height}; z-index:20; {wrap_style}'><b>{item['summary']}</b></div>"
+    
+    html += """
+                        </div>
+                    </div> 
+                </div> 
+                <div class='memo-column'></div>
+            </div>
+        </div> 
+    """
+    
+    text_items_flat = []
+    for evt in allday: evt['is_allday'] = True; text_items_flat.append(evt)
+    for evt in timed: evt['is_allday'] = False; text_items_flat.append(evt)
+    
+    if text_items_flat:
+        html += f"""
+        <div class='date-header-running'>{date_str} (계속)</div>
+        <div class='content-wrapper text-pages-wrapper'>
+            <div class='text-column'>
+        """
+        for evt in text_items_flat:
+            raw_desc = evt.get('description','') or ''
+            clean_desc = force_break_text(raw_desc).replace('\\n', '<br>')
+            real_color = evt.get('real_color', '#333')
+            if evt.get('is_allday'):
+                title_html = f"<span class='text-title' style='color:{real_color};'>[종일] {evt.get('summary','')}</span>"
+                html += f"""<div class='text-item'><div class='allday-styled' style='border-color:{real_color};'>{title_html}<div class='text-desc'>{clean_desc}</div></div></div>"""
+            else:
+                t_range, dur_str = get_time_info(evt)
+                meta_html = f"<span class='text-meta'><span style='color:{real_color}; font-weight:800; margin-right:5px;'>[{evt.get('calendar_name','')}]</span>{t_range} ({dur_str})</span>"
+                title_html = f"<span class='text-title' style='color:{real_color};'>{evt.get('summary','')}</span>"
+                html += f"""<div class='text-item'>{meta_html}{title_html}<div class='text-desc'>{clean_desc}</div></div>"""
+        html += """</div></div>"""
+    html += "</div>"
+    return html
+
+def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
+    font_config = FontConfiguration()
+    body_font = get_scaled_size(8.5)
+    meta_font = get_scaled_size(7.5)
+    title_font = get_scaled_size(10)
+    
+    css_style = f"""
+        @page {{ size: A4; margin: 1.5cm; }}
+        
+        @page text_layer {{
+            margin-top: 2.5cm;
+            margin-left: 2.4cm;
+            margin-right: 2.4cm; 
+            @top-center {{
+                content: element(headerContent); 
+                width: 100%;
+            }}
+        }}
+        
+        body {{ font-family: 'NanumGothic', sans-serif; color: #333; line-height: 1.35; font-size: {body_font}; }}
+        
+        .day-container {{ page-break-after: always; }}
+        .first-page-container {{
+            display: inline-block; width: 100%;
+            page-break-inside: avoid; break-inside: avoid; margin-bottom: 20px;
+        }}
+        
+        .header-wrapper-full {{ display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; width: 100%; background-color: white;}}
+        .header-line-full {{ width: 100%; height: 2px; background-color: #5d4037; margin-bottom: 10px; }}
+
+        .date-header {{ font-size: 16pt; font-weight: bold; color: #3e2723; margin: 0; padding: 0; }}
+        
+        .legend-container {{ text-align: right; }}
+        .legend-row {{ display: flex; align-items: center; justify-content: flex-end; margin-bottom: 2px; }}
+        .legend-box {{ display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; border: 1px solid #ccc; }}
+        .legend-text {{ font-size: 7pt; color: #666; }}
+        
+        .visual-page {{ width: 100%; height: 970px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
+        .timeline-col {{ position: absolute; top: 10px; height: 950px; width: 100%; box-sizing: border-box; }}
+        
+        .grid-line {{ position: absolute; left: 0; width: 100%; height: 0; border-top: 1px dashed #bbb; z-index: 0; }}
+        
+        .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: transparent; padding-right: 5px; z-index: 10; width: 30px; text-align: left; }}
+        
+        .event-block {{ position: absolute; border-radius: 6px; padding: 1px 3px; border: 1px solid white; box-shadow: 1px 1px 1px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: flex-start; z-index: 20; box-sizing: border-box; overflow: hidden; }}
+        
+        .date-header-running {{ 
+            position: running(headerContent); 
+            font-size: 16pt; font-weight: bold; color: #3e2723; 
+            border-bottom: 2px solid #5d4037; 
+            padding-bottom: 5px; margin-bottom: 20px; 
+            width: 100%; text-align: left;
+        }}
+        
+        /* V96.2: 본문 2단에서 긴 엔트리의 본문이 다음 단으로 흐르도록 허용. 시간표 유지. */
+        .text-pages-wrapper {{
+            page: text_layer;
+            display: block;
+            width: 100%;
+        }}
+        .text-pages-wrapper > .text-column {{
+            width: 100%;
+            padding-right: 0;
+            box-sizing: border-box;
+            column-count: 2;
+            column-gap: 0.85cm;
+            column-fill: auto;
+        }}
+        
+        .content-wrapper {{ display: flex; width: 100%; }} 
+        .text-column {{ width: 75%; padding-right: 2%; }} 
+        .memo-column {{ width: 23%; }} 
+        
+        .text-item {{
+            margin: 0 0 17px 0;
+            padding: 0 0 8px 0;
+            border-bottom: 1px solid #ece7e3;
+            width: 100%;
+            /* 엔트리 전체를 통째로 다음 단에 보내지 않는다. */
+            break-inside: auto;
+            page-break-inside: auto;
+            orphans: 2;
+            widows: 2;
+        }}
+        .allday-styled {{ background-color: #fff8e1; padding: 8px; border-radius: 6px; border-left: 3px solid; }}
+        
+        .text-meta {{ display: block; font-size: {meta_font}; color: #888; font-weight: bold; margin-bottom: 1px; break-after: avoid; page-break-after: avoid; }}
+        .text-title {{ display: block; font-size: {title_font}; font-weight: bold; margin-bottom: 3px; break-after: avoid; page-break-after: avoid; }}
+        
+        .text-desc {{ 
+            font-size: {body_font}; color: #444; white-space: pre-wrap; line-height: 1.5; word-break: break-all; overflow-wrap: break-word; 
+            overflow-wrap: anywhere;
+            /* 긴 설명은 단 경계에서 줄 단위로 나눌 수 있다. */
+            break-inside: auto;
+            orphans: 2;
+            widows: 2;
+        }}
+    """
+    
+    full_html = "<html><body>"
+    for d, events in sorted(daily_data.items()):
+        full_html += generate_day_html(d, events, cal_legend_info, ordered_ids)
+    full_html += "</body></html>"
+    
+    return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css_style, font_config=font_config)], font_config=font_config)
+
+# --- [6. Main UI] ---
+if 'pdf_data' not in st.session_state: st.session_state['pdf_data'] = None
+
+st.title("📝 시온이네 일기장 인쇄소")
+
+service, robot_email = get_calendar_service()
+
+if service:
+    with st.sidebar:
+        st.header("⚙️ 설정")
+        font_option = st.selectbox("텍스트 크기", ["보통", "작게", "크게"], index=0)
+        if font_option == "작게": FONT_SCALE = 0.9
+        elif font_option == "크게": FONT_SCALE = 1.1
+        else: FONT_SCALE = 1.0
+        
+        st.divider()
+        st.info(f"🤖 **이 로봇을 캘린더에 초대하세요:**")
+        st.code(robot_email, language="text")
+        
+        st.divider()
+        st.markdown("**👇 캘린더 ID 입력** (콤마로 구분, `| 색상` 옵션)")
+        manual = st.text_area("ID 목록", height=120, help="예: abc@group... | red")
+        
+    col1, col2 = st.columns(2)
+    with col1:
+        start_d = st.date_input("시작 날짜", date.today())
+    with col2:
+        end_d = st.date_input("종료 날짜", date.today())
+
+    if (end_d - start_d).days > 100:
+        st.warning("⚠️ 기간이 너무 깁니다(100일 초과). 서버 메모리 부족으로 멈출 수 있습니다.")
+
+    if st.button("🚀 일기책 만들기", type="primary"):
+        raw_inputs = [x.strip() for x in manual.split(',') if x.strip()]
+        final_ids = []
+        custom_colors = {}
+        for item in raw_inputs:
+            if "|" in item:
+                parts = item.split("|", 1)
+                cid = parts[0].strip()
+                color_input = parts[1].strip()
+                final_color = normalize_color(color_input)
+                final_ids.append(cid)
+                custom_colors[cid] = final_color
+            else:
+                final_ids.append(item)
+        
+        if not final_ids: st.error("캘린더 ID를 입력해주세요!")
+        elif start_d > end_d: st.error("날짜 선택이 잘못되었습니다.")
+        else:
+            with st.spinner("🔥 열심히 굽는 중... (잠시만 기다려주세요)"):
+                daily_data, cal_legend_info, logs = get_events_from_ids(service, final_ids, custom_colors, start_d, end_d)
+                
+                with st.expander("🔎 처리 결과 로그"):
+                    for log in logs:
+                        if "❌" in log: st.error(log)
+                        elif "⚠️" in log: st.warning(log)
+                        else: st.success(log)
+                
+                total_count = sum(len(v['allday']) + len(v['timed']) for v in daily_data.values())
+                if total_count == 0:
+                    st.warning("가져온 일기가 없습니다.")
+                else:
+                    pdf_bytes = create_full_pdf(daily_data, cal_legend_info, final_ids)
+                    st.session_state['pdf_data'] = pdf_bytes
+                    st.balloons()
+                    st.success(f"완성! 총 {total_count}개의 일기를 담았습니다.")
+
+    if st.session_state['pdf_data']:
+        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary.pdf")
+else:
+    st.error("인증 정보를 불러오지 못했습니다.")

@@ -1,3 +1,4 @@
+# V96.4 — PDF 미리보기 + 본문 여백/단 간격/엔트리 간격 조절
 # V96.3 — 캘린더 ID 자동 불러오기
 # V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
 # Streamlit Cloud Secrets 예시 (실제 ID를 채워 넣으세요):
@@ -19,6 +20,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta, date, timezone
 import math
+import fitz  # PyMuPDF: PDF 페이지를 이미지로 미리보기
 
 # --- [0. 페이지 설정] ---
 st.set_page_config(
@@ -449,7 +451,7 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     html += "</div>"
     return html
 
-def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
+def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4, column_gap_cm=0.85, entry_gap_px=17):
     font_config = FontConfiguration()
     body_font = get_scaled_size(8.5)
     meta_font = get_scaled_size(7.5)
@@ -460,8 +462,8 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         
         @page text_layer {{
             margin-top: 2.5cm;
-            margin-left: 2.4cm;
-            margin-right: 2.4cm; 
+            margin-left: {side_margin_cm:.2f}cm;
+            margin-right: {side_margin_cm:.2f}cm; 
             @top-center {{
                 content: element(headerContent); 
                 width: 100%;
@@ -514,7 +516,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
             padding-right: 0;
             box-sizing: border-box;
             column-count: 2;
-            column-gap: 0.85cm;
+            column-gap: {column_gap_cm:.2f}cm;
             column-fill: auto;
         }}
         
@@ -523,7 +525,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids):
         .memo-column {{ width: 23%; }} 
         
         .text-item {{
-            margin: 0 0 17px 0;
+            margin: 0 0 {entry_gap_px}px 0;
             padding: 0 0 8px 0;
             border-bottom: 1px solid #ece7e3;
             width: 100%;
@@ -588,6 +590,13 @@ if service:
             height=120,
             help="Secrets의 default_calendar_ids에 저장하면 앱을 다시 열어도 자동 입력됩니다. 이 화면에서 임시로 변경할 수도 있습니다. 예: abc@group... | red",
         )
+        st.divider()
+        st.subheader("📐 본문 인쇄 설정")
+        st.caption("시간표는 그대로 두고, 뒤쪽 2단 본문에만 적용됩니다.")
+        side_margin_cm = st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1, help="메모할 공간을 넓히려면 값을 키우세요.")
+        column_gap_cm = st.slider("두 단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05)
+        entry_gap_px = st.slider("엔트리 아래 간격 (px)", 8, 30, 17, 1)
+        st.caption("V96.3 기본값: 좌우 2.4cm · 단 간격 0.85cm · 엔트리 간격 17px")
         if default_ids:
             st.caption("✅ 저장된 기본 캘린더 목록을 불러왔습니다. 여기서 수정한 값은 임시 적용되며 Secrets에는 자동 저장되지 않습니다.")
         else:
@@ -633,12 +642,28 @@ if service:
                 if total_count == 0:
                     st.warning("가져온 일기가 없습니다.")
                 else:
-                    pdf_bytes = create_full_pdf(daily_data, cal_legend_info, final_ids)
+                    pdf_bytes = create_full_pdf(daily_data, cal_legend_info, final_ids, side_margin_cm, column_gap_cm, entry_gap_px)
                     st.session_state['pdf_data'] = pdf_bytes
+                    st.session_state['preview_page'] = 1
                     st.balloons()
                     st.success(f"완성! 총 {total_count}개의 일기를 담았습니다.")
 
     if st.session_state['pdf_data']:
         st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary.pdf")
+        st.subheader("🔍 PDF 미리보기")
+        st.caption("PDF를 다운로드하지 않고 페이지별로 확인할 수 있습니다. 설정을 바꾸면 '일기책 만들기'를 다시 눌러 반영하세요.")
+        try:
+            with fitz.open(stream=st.session_state['pdf_data'], filetype="pdf") as doc:
+                page_count = len(doc)
+                st.caption(f"총 {page_count}페이지")
+                page_no = st.number_input("미리 볼 페이지", min_value=1, max_value=page_count,
+                                          value=min(st.session_state.get('preview_page', 1), page_count),
+                                          step=1, key="preview_page")
+                page = doc.load_page(page_no - 1)
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                st.image(pix.tobytes("png"), caption=f"{page_no} / {page_count}페이지", use_container_width=True)
+        except Exception as exc:
+            st.warning("미리보기를 표시하지 못했습니다. PDF 다운로드는 계속 사용할 수 있습니다.")
+            st.caption(f"미리보기 오류 유형: {type(exc).__name__}")
 else:
     st.error("인증 정보를 불러오지 못했습니다.")

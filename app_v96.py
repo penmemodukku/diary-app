@@ -1,3 +1,9 @@
+# V96.3 — 캘린더 ID 자동 불러오기
+# V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
+# Streamlit Cloud Secrets 예시 (실제 ID를 채워 넣으세요):
+# default_calendar_ids = """calendar-id-1 | brown, calendar-id-2 | blue"""
+# 주의: GitHub 공개 저장소에 실제 ID 또는 서비스 계정 비밀키를 올리지 마세요.
+
 # ==========================================
 # [시온이네 일기장] V96.2 (Two-Column + Flowing Entry Text)
 # ==========================================
@@ -570,7 +576,22 @@ if service:
         
         st.divider()
         st.markdown("**👇 캘린더 ID 입력** (콤마로 구분, `| 색상` 옵션)")
-        manual = st.text_area("ID 목록", height=120, help="예: abc@group... | red")
+        # 기본 목록은 Streamlit Cloud의 비공개 Secrets에서 읽습니다.
+        # GitHub 공개 코드에 개인 캘린더 ID를 직접 적지 마세요.
+        default_ids = st.secrets.get("default_calendar_ids", "")
+        if not isinstance(default_ids, str):
+            st.error("Secrets의 default_calendar_ids는 문자열로 설정해주세요.")
+            default_ids = ""
+        manual = st.text_area(
+            "ID 목록",
+            value=default_ids,
+            height=120,
+            help="Secrets의 default_calendar_ids에 저장하면 앱을 다시 열어도 자동 입력됩니다. 이 화면에서 임시로 변경할 수도 있습니다. 예: abc@group... | red",
+        )
+        if default_ids:
+            st.caption("✅ 저장된 기본 캘린더 목록을 불러왔습니다. 여기서 수정한 값은 임시 적용되며 Secrets에는 자동 저장되지 않습니다.")
+        else:
+            st.caption("💡 한 번만 Streamlit 앱 Settings → Secrets에 default_calendar_ids를 저장하면 다음부터 자동 입력됩니다.")
         
     col1, col2 = st.columns(2)
     with col1:

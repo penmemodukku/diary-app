@@ -1,4 +1,4 @@
-# V98.0.3 — 날짜 머리글 위치 및 구분선 통일
+# V98.0.4 — 상세 기록 글자 크기 조절
 # V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
 # V96.3 — 캘린더 ID 자동 불러오기
 # V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
@@ -412,7 +412,7 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_e
         l_pct = GUTTER_PCT + (item['left'] * (100 - GUTTER_PCT) / 100)
         
         top_px = (item['_s'] * PIXELS_PER_MIN) + TOP_OFFSET
-        font_size = get_scaled_size(7.5)
+        font_size = "7.5pt"
         line_height = '1.2'
         
         if item['_dur'] <= 30:
@@ -457,11 +457,11 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_e
     html += "</div>"
     return html
 
-def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4, column_gap_cm=0.85, entry_gap_px=17, include_empty=False):
+def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4, column_gap_cm=0.85, entry_gap_px=17, include_empty=False, font_scale=1.0):
     font_config = FontConfiguration()
-    body_font = get_scaled_size(8.5)
-    meta_font = get_scaled_size(7.5)
-    title_font = get_scaled_size(10)
+    body_font = f"{8.5 * font_scale:g}pt"
+    meta_font = f"{7.5 * font_scale:g}pt"
+    title_font = f"{10 * font_scale:g}pt"
     
     css_style = f"""
         @page {{ size: A4; margin: 1.5cm; }}
@@ -478,7 +478,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4
             }}
         }}
         
-        body {{ font-family: 'NanumGothic', sans-serif; color: #333; line-height: 1.35; font-size: {body_font}; }}
+        body {{ font-family: 'NanumGothic', sans-serif; color: #333; line-height: 1.35; font-size: 8.5pt; }}
         
         .day-container {{ page-break-after: always; }}
         .first-page-container {{
@@ -607,12 +607,6 @@ body_key = None
 if service:
     with st.sidebar:
         st.header("⚙️ 설정")
-        font_option = st.selectbox("텍스트 크기", ["보통", "작게", "크게"], index=0)
-        if font_option == "작게": FONT_SCALE = 0.9
-        elif font_option == "크게": FONT_SCALE = 1.1
-        else: FONT_SCALE = 1.0
-
-        st.divider()
         st.info("🤖 **이 로봇을 캘린더에 초대하세요:**")
         st.code(robot_email, language="text")
         st.divider()
@@ -699,6 +693,9 @@ if service:
             )
             st.subheader("📐 인쇄 레이아웃")
             st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
+            font_option = st.radio("본문 글자 크기", ["작게", "보통", "크게"], index=1, horizontal=True, key="v984_font_"+mode)
+            FONT_SCALE = {"작게": 0.85, "보통": 1.0, "크게": 1.2}[font_option]
+            st.caption("상세 기록의 제목·시간·본문에 적용됩니다. 시간표와 날짜 머리글은 고정됩니다.")
             setting_cols = st.columns(3)
             with setting_cols[0]:
                 side_margin_cm = st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
@@ -713,12 +710,12 @@ if service:
                 id(cached["data"]), include_empty,
             )
             if st.session_state["preview_key"] != current_key:
-                with st.spinner("변경된 여백으로 미리보기를 갱신하는 중..."):
+                with st.spinner("변경된 설정으로 미리보기를 갱신하는 중..."):
                     try:
                         st.session_state["preview_pdf"] = create_full_pdf(
                             {selected_day: cached["data"][selected_day]},
                             cached["legend"], cached["ids"],
-                            side_margin_cm, column_gap_cm, entry_gap_px, include_empty,
+                            side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE,
                         )
                         old_key = st.session_state["preview_key"]
                         if old_key is None or old_key[0] != current_key[0]:
@@ -751,7 +748,7 @@ if service:
                 except Exception as exc:
                     st.error(f"PDF 표시 오류: {type(exc).__name__}: {exc}")
 
-            body_args = (print_data, cached["legend"], cached["ids"], side_margin_cm, column_gap_cm, entry_gap_px, include_empty)
+            body_args = (print_data, cached["legend"], cached["ids"], side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE)
             body_key = (mode, id(cached["data"]), side_margin_cm, column_gap_cm, entry_gap_px, FONT_SCALE, include_empty)
             body_ready = cached["start"] == start_d and cached["end"] == end_d and cached.get("manual", manual) == manual
 

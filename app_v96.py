@@ -1,4 +1,4 @@
-# V98.1.2 — 주간 제목 자동 배치
+# V98.1.3 — 주간 가독성 및 생략 표시
 # V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
 # V96.3 — 캘린더 ID 자동 불러오기
 # V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
@@ -582,36 +582,71 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
         if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?', color): color = '#555555'
         return f'<div class="event" style="border-left-color:{color};color:{color}">{escape(title)}</div>'
     def style(size, gap):
-        return f"""body {{margin:0;font-family:NanumGothic,sans-serif;font-size:{size}pt;line-height:1.22;color:#332c28;}} .event {{border-left:1.2pt solid;padding-left:.7mm;margin-bottom:{gap}mm;overflow-wrap:anywhere;word-break:break-all;font-weight:bold;}}"""
+        return f"""body {{margin:0;font-family:NanumGothic,sans-serif;font-size:{size}pt;line-height:1.22;color:#332c28;}} .event {{border-left:1.2pt solid;padding-left:.7mm;margin-bottom:{gap}mm;overflow-wrap:anywhere;word-break:break-all;font-weight:bold;}} .omission {{color:#777;font-size:6pt;line-height:1.1;margin-bottom:1mm;}} .omission-total {{color:#777;font-size:6.5pt;border-top:.4pt solid #bbb;padding-top:.6mm;margin-top:1mm;text-align:center;}}"""
     def fit_column(es):
+        import unicodedata
         titles = [' '.join(str(e.get('summary') or '(제목 없음)').split()) for e in es]
-        if not titles: return '', 8*font_scale, 0
-        def measure(ts, size, gap):
-            html = ''.join(event_html(e,t) for e,t in zip(es,ts))
-            css = f'@page {{size:{width-2.5}mm 1000mm;margin:0;}}' + style(size,gap)
+        size = 8 * font_scale
+        gap = max(1, min(2, entry_gap_px / 15))
+        if not titles: return '', size, gap
+        limit = (height - 3) * 96 / 25.4
+        def important(e):
+            name = e.get('calendar_name') or legend.get(e.get('calendar_id'), {}).get('name', '')
+            name = unicodedata.normalize('NFKC', str(name)).replace(' ', '')
+            return '긍정' in name or '부정' in name
+        def content(indices, ts):
+            kept = set(indices); parts = []; missing = False
+            for i in range(len(es)):
+                if i not in kept:
+                    missing = True
+                    continue
+                if missing:
+                    parts.append('<div class="omission">···</div>'); missing = False
+                parts.append(event_html(es[i], ts[i]))
+            if len(indices) < len(es):
+                parts.append(f'<div class="omission-total">생략 건수 {len(es)-len(indices)}건</div>')
+            return ''.join(parts)
+        def measure(html, sz, g):
+            css = f'@page {{size:{width-2.5}mm 1000mm;margin:0;}}' + style(sz,g)
             doc = HTML(string='<meta charset="utf-8"><body><div class="measure">'+html+'</div></body>').render(stylesheets=[CSS(string=css,font_config=fc)],font_config=fc)
-            if len(doc.pages)!=1: return False
+            if len(doc.pages)!=1: return float('inf')
             box = next(x for x in doc.pages[0]._page_box.descendants() if getattr(x,'element_tag',None)=='div' and x.element.get('class')=='measure')
-            return box.height <= (height-3)*96/25.4
-        size=8*font_scale; gap=min(2,entry_gap_px/15)
-        if measure(titles,size,gap): return ''.join(event_html(e,t) for e,t in zip(es,titles)),size,gap
-        # Preserve full titles first by reducing spacing, then modestly reducing font.
-        for g in [gap/2,0]:
-            if measure(titles,size,g): return ''.join(event_html(e,t) for e,t in zip(es,titles)),size,g
-        gap=0
-        # Find the largest common title budget that actually fits; short titles stay intact.
-        for factor in [1,.9,.8,.7,.6,.5]:
-            sz=size*factor
-            def cut(n): return [t if len(t)<=n else t[:max(0,n-1)]+'…' for t in titles]
-            if not measure(cut(2),sz,gap): continue
-            lo,hi=2,max(2,max(map(len,titles)))
-            while lo<hi:
-                mid=(lo+hi+1)//2
-                if measure(cut(mid),sz,gap): lo=mid
-                else: hi=mid-1
-            ts=cut(lo)
-            return ''.join(event_html(e,t) for e,t in zip(es,ts)),sz,gap
-        raise RuntimeError('한 날짜의 사건이 너무 많아 한 페이지에 모두 표시할 수 없습니다. 캘린더 선택을 줄여 주세요.')
+            return box.height
+        def two_lines(sz):
+            # Measure all titles in a single render, then binary-search only overflowing titles.
+            def counts(ts):
+                html = ''.join(event_html(e,t) for e,t in zip(es,ts))
+                css = f'@page {{size:{width-2.5}mm 10000mm;margin:0;}}' + style(sz,1)
+                doc = HTML(string='<meta charset="utf-8"><body>'+html+'</body>').render(stylesheets=[CSS(string=css,font_config=fc)],font_config=fc)
+                return [sum(type(y).__name__=='LineBox' for y in x.descendants()) for page in doc.pages for x in page._page_box.descendants() if type(x).__name__=='BlockBox' and getattr(x,'element_tag',None)=='div' and x.element.get('class')=='event']
+            lo=[0]*len(titles); hi=[len(t) for t in titles]
+            def cut(i,n): return titles[i] if n>=len(titles[i]) else titles[i][:n].rstrip()+'…'
+            while any(a<b for a,b in zip(lo,hi)):
+                mid=[(a+b+1)//2 for a,b in zip(lo,hi)]
+                cs=counts([cut(i,n) for i,n in enumerate(mid)])
+                if len(cs)!=len(titles): raise RuntimeError('주간 제목 줄 수 측정 실패')
+                for i,n in enumerate(mid):
+                    if lo[i]==hi[i]: continue
+                    if cs[i]<=2: lo[i]=n
+                    else: hi[i]=n-1
+            return [cut(i,n) for i,n in enumerate(lo)]
+        indices=list(range(len(es)))
+        full=content(indices,titles)
+        for g in dict.fromkeys([gap,1]):
+            if measure(full,size,g)<=limit: return full,size,g
+        gap=1
+        floor=max(min(size,6.5),size*.85)
+        for sz in dict.fromkeys([size,max(floor,size*.95),max(floor,size*.90),floor]):
+            ts=two_lines(sz); html=content(indices,ts)
+            if measure(html,sz,gap)<=limit: return html,sz,gap
+        # Keep chronological order. Remove ordinary events from the end first;
+        # a marker preserves each omitted run before a retained event.
+        priority=[i for i in reversed(indices) if not important(es[i])]+[i for i in reversed(indices) if important(es[i])]
+        for i in priority:
+            indices.remove(i)
+            html=content(indices,ts)
+            if measure(html,sz,gap)<=limit: return html,sz,gap
+        return content([],ts),sz,gap
     with fitz.open() as out:
         for w in sorted({week_start(d) for d in daily_data}):
             heads=[]; cells=[]

@@ -734,3 +734,130 @@ if service:
             )
 else:
     st.error("인증 정보를 불러오지 못했습니다.")
+
+# --- [7. V97 photo appendix] ---
+import io, hashlib, base64, html
+from PIL import Image, ImageOps
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
+
+def read_photo(raw):
+    with Image.open(io.BytesIO(raw)) as im:
+        exif = im.getexif()
+        nested = exif.get_ifd(34665) if 34665 in exif else {}
+        stamp = None
+        for value in (nested.get(36867), exif.get(36867), nested.get(36868), exif.get(36868)):
+            if value:
+                try:
+                    stamp = datetime.strptime(str(value), '%Y:%m:%d %H:%M:%S')
+                    break
+                except ValueError:
+                    pass
+        im = ImageOps.exif_transpose(im)
+        im.thumbnail((2400, 2400))
+        if im.mode in ('RGBA','LA') or 'transparency' in im.info:
+            rgba = im.convert('RGBA')
+            white = Image.new('RGB', rgba.size, 'white')
+            white.paste(rgba, mask=rgba.getchannel('A'))
+            im = white
+        else:
+            im = im.convert('RGB')
+        buf = io.BytesIO()
+        im.save(buf, format='JPEG', quality=92)
+        return stamp, buf.getvalue()
+
+def photo_pdf(records, cols):
+    esc = html.escape
+    groups = {}
+    for r in sorted(records, key=lambda r: (r['day'], r['stamp'] or datetime.max, r['name'])):
+        groups.setdefault(r['day'], []).append(r)
+    parts = ['<h1>사진 기록 부록</h1>']
+    for day, items in groups.items():
+        parts.append(f'<h2>{day}</h2>')
+        for i in range(0, len(items), cols):
+            cells = []
+            for r in items[i:i+cols]:
+                stamp = r['stamp'].strftime('%Y-%m-%d %H:%M') if r['stamp'] else '촬영일 미확인'
+                b64 = base64.b64encode(r['jpeg']).decode('ascii')
+                cells.append(f'<td><img src="data:image/jpeg;base64,{b64}"><div class="meta">{esc(stamp)}</div><div class="caption">{esc(r["caption"])}</div></td>')
+            cells.extend(['<td></td>']*(cols-len(cells)))
+            parts.append('<table><tr>'+''.join(cells)+'</tr></table>')
+    height = {1:145,2:85,3:60,4:45}[cols]
+    css = f'''@page {{size:A4;margin:18mm; @bottom-center {{content: "사진 부록 · " counter(page);font-size:8pt;}}}} body {{font-family:NanumGothic,sans-serif;color:#332c28;font-size:9pt;}} h1 {{font-size:19pt;margin:0 0 6mm;}} h2 {{font-size:12pt;border-bottom:1px solid #aaa; margin:4mm 0 2mm;break-after:avoid;}} table {{width:100%;table-layout:fixed;border-spacing:2mm;break-inside:avoid;}} td {{width:{100/cols}%;vertical-align:top;}} img {{display:block;max-width:100%;max-height:{height}mm;margin:auto;}} .meta {{font-size:8pt;color:#555;margin-top:1mm;}} .caption {{white-space:pre-wrap;overflow-wrap:break-word;}}'''
+    return HTML(string='<html><meta charset="utf-8"><body>'+''.join(parts)+'</body></html>').write_pdf(stylesheets=[CSS(string=css)])
+
+def merge_photo_pdf(diary, photos):
+    with fitz.open(stream=diary,filetype='pdf') as a, fitz.open(stream=photos,filetype='pdf') as b:
+        a.insert_pdf(b)
+        return a.tobytes(garbage=3, deflate=True)
+
+st.divider()
+st.header('📷 사진 기록 부록 · V97')
+st.caption('일기와 독립적으로 사진을 정리할 수 있습니다. 사진은 현재 세션에서만 처리하며 클라우드 서버로 전송됩니다. 민감한 사진은 비공개 앱에서만 사용하세요.')
+files = st.file_uploader('사진을 여기에 끌어다 놓으세요', type=['jpg','jpeg','png','heic','heif','webp'], accept_multiple_files=True, key='v97_upload')
+if 'v97_photo_cache' not in st.session_state:
+    st.session_state.v97_photo_cache = {}
+cache = st.session_state.v97_photo_cache
+active = {}
+for f in files or []:
+    raw = f.getvalue()
+    key = hashlib.sha256(raw).hexdigest()
+    if key in active:
+        st.caption(f'중복 사진 제외: {f.name}')
+        continue
+    try:
+        if key not in cache:
+            cache[key] = read_photo(raw)
+        active[key] = (f.name, *cache[key])
+    except Exception as e:
+        st.warning(f'{f.name}: 사진을 읽지 못했습니다 ({type(e).__name__})')
+for key in list(cache):
+    if key not in active:
+        del cache[key]
+if active:
+    cols = st.radio('사진 배열', [1,2,3,4], index=2, horizontal=True, format_func=lambda x:f'{x}열')
+    records = []
+    for key,(name,stamp,jpeg) in sorted(active.items(), key=lambda x:(x[1][1] or datetime.max,x[1][0])):
+        with st.expander(name + ' · ' + (stamp.strftime('%Y-%m-%d %H:%M') if stamp else '촬영일 미확인')):
+            left,right = st.columns([1,2])
+            with left:
+                st.image(jpeg, width=140)
+            with right:
+                day = st.date_input('기록 귀속일', value=stamp.date() if stamp else None, key='photo_day_'+key)
+                caption = st.text_area('사진 설명', key='photo_caption_'+key, max_chars=300)
+                include = st.checkbox('출력에 포함', value=True, key='photo_include_'+key)
+            if include and day is None:
+                st.warning('기록 귀속일을 지정해야 출력할 수 있습니다.')
+            if include and day is not None:
+                records.append(dict(day=day, stamp=stamp, jpeg=jpeg, caption=caption, name=name, key=key))
+    signature = (cols, tuple((r['key'],r['day'],r['caption']) for r in records))
+    if st.button('사진 부록 PDF 미리보기', key='photo_generate', disabled=not records):
+        with st.spinner('사진 부록 생성 중...'):
+            try:
+                st.session_state['v97_photo_pdf'] = photo_pdf(records, cols)
+                st.session_state['v97_photo_sig'] = signature
+                st.session_state['v97_photo_page'] = 1
+            except Exception as e:
+                st.error(f'사진 PDF 생성 실패: {type(e).__name__}: {e}')
+    photo_bytes = st.session_state.get('v97_photo_pdf')
+    if photo_bytes and st.session_state.get('v97_photo_sig') == signature:
+        with fitz.open(stream=photo_bytes,filetype='pdf') as doc:
+            p = st.selectbox('사진 부록 페이지', list(range(1,len(doc)+1)), key='v97_photo_page_select_'+hashlib.sha256(photo_bytes).hexdigest()[:16])
+            st.image(doc[p-1].get_pixmap(matrix=fitz.Matrix(1.5,1.5)).tobytes('png'),use_container_width=True)
+        st.download_button('사진 부록만 다운로드', photo_bytes, file_name='PhotoAppendix.pdf', key='photo_download')
+        diary = st.session_state.get('pdf_data')
+        if diary:
+            st.caption('결합 파일은 마지막으로 생성한 전체 일기 PDF 뒤에 사진을 붙입니다. 일기 설정을 바꿨다면 전체 PDF부터 다시 생성하세요. 사진 날짜 범위는 자동 제한하지 않습니다.')
+            if st.button('일기 + 사진 결합 PDF 만들기',key='photo_merge'):
+                st.session_state['v97_combined'] = merge_photo_pdf(diary,photo_bytes)
+                st.session_state['v97_combined_sig'] = (hashlib.sha256(diary).digest(),hashlib.sha256(photo_bytes).digest())
+            if st.session_state.get('v97_combined_sig') == (hashlib.sha256(diary).digest(),hashlib.sha256(photo_bytes).digest()):
+                st.download_button('일기 + 사진 PDF 다운로드',st.session_state['v97_combined'],file_name='DiaryWithPhotos.pdf',key='photo_combined_download')
+    elif photo_bytes:
+        st.info('사진 설정이 변경되었습니다. 미리보기 버튼을 다시 눌러주세요.')
+else:
+    for k in ('v97_photo_pdf','v97_photo_sig','v97_combined','v97_combined_sig'):
+        st.session_state.pop(k,None)

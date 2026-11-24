@@ -1,4 +1,4 @@
-# V98.1 — 주간 인쇄 (그리드 / 목록)
+# V98.1.2 — 주간 제목 자동 배치
 # V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
 # V96.3 — 캘린더 ID 자동 불러오기
 # V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
@@ -573,45 +573,60 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
     from html import escape
     import re
     days = ['일','월','화','수','목','금','토']
-    def shorten(t,n):
-        t=' '.join(str(t).split())
-        return t if len(t)<=n else t[:max(1,n-1)]+'…'
-    def event_html(e, title_limit, desc_limit=0):
-        color=str(e.get('real_color','#555555'))
-        if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?',color): color='#555555'
-        title=escape(shorten(e.get('summary') or '(제목 없음)',title_limit))
-        desc=escape(shorten(re.sub(r'<[^>]*>',' ',str(e.get('description') or '')),desc_limit)) if desc_limit and e.get('description') else ''
-        return f'<div class="event" style="border-left-color:{color}"><b style="color:{color}">{title}</b>'+ (f'<div class="desc">{desc}</div>' if desc else '')+'</div>'
-    def extra(n): return f'<div class="extra">(외 {n}건)</div>' if n else ''
+    # Measure each column using the same renderer and font as the final PDF.
+    fc = FontConfiguration()
+    width = (297 - 20 * side_margin_cm) / 7
+    height = 157
+    def event_html(e, title):
+        color = str(e.get('real_color', '#555555'))
+        if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?', color): color = '#555555'
+        return f'<div class="event" style="border-left-color:{color};color:{color}">{escape(title)}</div>'
+    def style(size, gap):
+        return f"""body {{margin:0;font-family:NanumGothic,sans-serif;font-size:{size}pt;line-height:1.22;color:#332c28;}} .event {{border-left:1.2pt solid;padding-left:.7mm;margin-bottom:{gap}mm;overflow-wrap:anywhere;word-break:break-all;font-weight:bold;}}"""
+    def fit_column(es):
+        titles = [' '.join(str(e.get('summary') or '(제목 없음)').split()) for e in es]
+        if not titles: return '', 8*font_scale, 0
+        def measure(ts, size, gap):
+            html = ''.join(event_html(e,t) for e,t in zip(es,ts))
+            css = f'@page {{size:{width-2.5}mm 1000mm;margin:0;}}' + style(size,gap)
+            doc = HTML(string='<meta charset="utf-8"><body><div class="measure">'+html+'</div></body>').render(stylesheets=[CSS(string=css,font_config=fc)],font_config=fc)
+            if len(doc.pages)!=1: return False
+            box = next(x for x in doc.pages[0]._page_box.descendants() if getattr(x,'element_tag',None)=='div' and x.element.get('class')=='measure')
+            return box.height <= (height-3)*96/25.4
+        size=8*font_scale; gap=min(2,entry_gap_px/15)
+        if measure(titles,size,gap): return ''.join(event_html(e,t) for e,t in zip(es,titles)),size,gap
+        # Preserve full titles first by reducing spacing, then modestly reducing font.
+        for g in [gap/2,0]:
+            if measure(titles,size,g): return ''.join(event_html(e,t) for e,t in zip(es,titles)),size,g
+        gap=0
+        # Find the largest common title budget that actually fits; short titles stay intact.
+        for factor in [1,.9,.8,.7,.6,.5]:
+            sz=size*factor
+            def cut(n): return [t if len(t)<=n else t[:max(0,n-1)]+'…' for t in titles]
+            if not measure(cut(2),sz,gap): continue
+            lo,hi=2,max(2,max(map(len,titles)))
+            while lo<hi:
+                mid=(lo+hi+1)//2
+                if measure(cut(mid),sz,gap): lo=mid
+                else: hi=mid-1
+            ts=cut(lo)
+            return ''.join(event_html(e,t) for e,t in zip(es,ts)),sz,gap
+        raise RuntimeError('한 날짜의 사건이 너무 많아 한 페이지에 모두 표시할 수 없습니다. 캘린더 선택을 줄여 주세요.')
     with fitz.open() as out:
         for w in sorted({week_start(d) for d in daily_data}):
-            entries=[]
+            heads=[]; cells=[]
             for i in range(7):
                 d=w+timedelta(days=i); data=daily_data.get(d,{'allday':[],'timed':[]})
-                entries.append(data['allday']+data['timed'])
+                heads.append(f'{d.month}/{d.day} ({days[i]})')
+                content,size,gap=fit_column(data['allday']+data['timed'])
+                cells.append(f'<td><div style="font-size:{size}pt;--gap:{gap}mm">{content}</div></td>')
             title=f'{w:%Y.%m.%d} — {w+timedelta(days=6):%Y.%m.%d}'
-            # progressively reduce content until the actual PDF fits one page
-            for cap in [24,16,12,8,6,4,3,2,1,0]:
-                heads=[f'{(w+timedelta(days=i)).month}/{(w+timedelta(days=i)).day} ({days[i]})' for i in range(7)]
-                if layout=='주간 그리드형':
-                    cells=[]
-                    for es in entries:
-                        n=min(len(es),cap); desc=max(0,min(220,300//max(n,1)-30))
-                        cells.append(''.join(event_html(e, max(12,min(65,180//max(n,1))),desc) for e in es[:n])+extra(len(es)-n))
-                    body='<table class="grid"><tr>'+''.join('<th>'+h+'</th>' for h in heads)+'</tr><tr>'+''.join('<td>'+c+'</td>' for c in cells)+'</tr></table>'
-                else:
-                    rows=[]
-                    for h,es in zip(heads,entries):
-                        n=min(len(es),cap,12); cols=min(4,max(2,math.ceil(n/3))); per=max(1,math.ceil(n/cols))
-                        cells=[''.join(event_html(e, max(12,64//cols)) for e in es[j*per:min(n,(j+1)*per)]) for j in range(cols)]
-                        rows.append('<tr><th>'+h+'</th><td><table class="inner"><tr>'+''.join('<td>'+c+'</td>' for c in cells)+'</tr></table>'+extra(len(es)-n)+'</td></tr>')
-                    body='<table class="list">'+''.join(rows)+'</table>'
-                css=f"""@page {{size:A4 landscape;margin:12mm {side_margin_cm}cm;}} body {{font-family:NanumGothic,sans-serif;font-size:{8*font_scale}pt;color:#332c28;margin:0;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;overflow-wrap:break-word;}} th {{background:#f1eee8;font-weight:normal;}} .grid td {{height:150mm;}} .list th {{width:20mm;}} .list > tbody > tr > td {{height:20mm;}} .inner td {{border:0;border-right:.4pt solid #ddd;padding:.5mm;}} .event {{border-left:1.5pt solid #777;padding-left:1mm;margin-bottom:{min(2,entry_gap_px/15):g}mm;overflow-wrap:break-word;}} .desc,.extra {{font-size:{7*font_scale}pt;color:#555;}}"""
-                pdf=HTML(string='<html><meta charset="utf-8"><body><h1>'+title+'</h1>'+body+'</body></html>').write_pdf(stylesheets=[CSS(string=css)])
-                with fitz.open(stream=pdf,filetype='pdf') as doc:
-                    if len(doc)==1:
-                        out.insert_pdf(doc); break
-            else: raise RuntimeError('주간 양식을 한 페이지에 배치하지 못했습니다.')
+            body='<table><tr>'+''.join('<th>'+h+'</th>' for h in heads)+'</tr><tr>'+''.join(cells)+'</tr></table>'
+            css=f"""@page {{size:A4 landscape;margin:12mm {side_margin_cm}cm;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;}} th {{background:#f1eee8;font-weight:normal;}} td {{height:{height}mm;}} .event {{margin-bottom:var(--gap);}}"""+style(8*font_scale,0)+'.event {margin-bottom:var(--gap);}'
+            pdf=HTML(string='<meta charset="utf-8"><body><h1>'+title+'</h1>'+body+'</body>').write_pdf(stylesheets=[CSS(string=css,font_config=fc)],font_config=fc)
+            with fitz.open(stream=pdf,filetype='pdf') as doc:
+                if len(doc)!=1: raise RuntimeError('주간 양식을 한 페이지에 배치하지 못했습니다. 글자 크기 또는 여백을 줄여 주세요.')
+                out.insert_pdf(doc)
         return out.tobytes(garbage=3,deflate=True)
 
 def render_body(*args):
@@ -652,7 +667,7 @@ if mode is None:
     st.stop()
 planner = mode == "플래너"
 st.header(mode + " · 인쇄")
-layout = st.radio("인쇄 양식", ["일간", "주간 그리드형", "주간 목록형"], horizontal=True, key="v981_layout_"+mode)
+layout = st.radio("인쇄 양식", ["일간", "주간"], horizontal=True, key="v9812_layout_"+mode)
 service, robot_email = get_calendar_service()
 
 body_ready = False
@@ -782,7 +797,7 @@ if service:
             st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
             font_option = st.radio("본문 글자 크기", ["작게", "보통", "크게"], index=1, horizontal=True, key="v984_font_"+mode)
             FONT_SCALE = {"작게": 0.85, "보통": 1.0, "크게": 1.2}[font_option]
-            st.caption("상세 기록 또는 주간 사건 제목과 시간에 적용됩니다. 날짜 머리글은 고정됩니다.")
+            st.caption("상세 기록 또는 주간 사건 제목에 적용됩니다. 날짜 머리글은 고정됩니다.")
             setting_cols = st.columns(3)
             with setting_cols[0]:
                 side_margin_cm = st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)

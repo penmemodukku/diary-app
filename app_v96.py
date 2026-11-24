@@ -1,4 +1,4 @@
-# V96.4 — PDF 미리보기 + 본문 여백/단 간격/엔트리 간격 조절
+# V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
 # V96.3 — 캘린더 ID 자동 불러오기
 # V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
 # Streamlit Cloud Secrets 예시 (실제 ID를 채워 넣으세요):
@@ -35,6 +35,8 @@ st.markdown("""
     <style>
     .stApp { background-color: #FDFCF0; }
     section[data-testid="stSidebar"] { background-color: #F7F5E6; }
+    .stApp, .stApp p, .stApp label, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp span { color: #332C28; }
+    section[data-testid="stSidebar"] * { color: #332C28; }
     .stButton > button {
         background-color: #FF4B4B;
         color: white;
@@ -558,10 +560,15 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4
     return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css_style, font_config=font_config)], font_config=font_config)
 
 # --- [6. Main UI] ---
-if 'pdf_data' not in st.session_state: st.session_state['pdf_data'] = None
+# Google Calendar is fetched once; print-layout changes reuse the downloaded events.
+for key, default in {
+    "pdf_data": None, "cached_diary": None, "preview_pdf": None,
+    "preview_key": None, "preview_page": 1, "full_pdf_key": None,
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 st.title("📝 시온이네 일기장 인쇄소")
-
 service, robot_email = get_calendar_service()
 
 if service:
@@ -571,37 +578,33 @@ if service:
         if font_option == "작게": FONT_SCALE = 0.9
         elif font_option == "크게": FONT_SCALE = 1.1
         else: FONT_SCALE = 1.0
-        
+
         st.divider()
-        st.info(f"🤖 **이 로봇을 캘린더에 초대하세요:**")
+        st.info("🤖 **이 로봇을 캘린더에 초대하세요:**")
         st.code(robot_email, language="text")
-        
         st.divider()
         st.markdown("**👇 캘린더 ID 입력** (콤마로 구분, `| 색상` 옵션)")
-        # 기본 목록은 Streamlit Cloud의 비공개 Secrets에서 읽습니다.
-        # GitHub 공개 코드에 개인 캘린더 ID를 직접 적지 마세요.
         default_ids = st.secrets.get("default_calendar_ids", "")
         if not isinstance(default_ids, str):
             st.error("Secrets의 default_calendar_ids는 문자열로 설정해주세요.")
             default_ids = ""
-        manual = st.text_area(
-            "ID 목록",
-            value=default_ids,
-            height=120,
-            help="Secrets의 default_calendar_ids에 저장하면 앱을 다시 열어도 자동 입력됩니다. 이 화면에서 임시로 변경할 수도 있습니다. 예: abc@group... | red",
-        )
-        st.divider()
-        st.subheader("📐 본문 인쇄 설정")
-        st.caption("시간표는 그대로 두고, 뒤쪽 2단 본문에만 적용됩니다.")
-        side_margin_cm = st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1, help="메모할 공간을 넓히려면 값을 키우세요.")
-        column_gap_cm = st.slider("두 단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05)
-        entry_gap_px = st.slider("엔트리 아래 간격 (px)", 8, 30, 17, 1)
-        st.caption("V96.3 기본값: 좌우 2.4cm · 단 간격 0.85cm · 엔트리 간격 17px")
+        manual = st.text_area("ID 목록", value=default_ids, height=120)
         if default_ids:
-            st.caption("✅ 저장된 기본 캘린더 목록을 불러왔습니다. 여기서 수정한 값은 임시 적용되며 Secrets에는 자동 저장되지 않습니다.")
+            st.caption("✅ 저장된 캘린더 목록을 불러왔습니다.")
         else:
-            st.caption("💡 한 번만 Streamlit 앱 Settings → Secrets에 default_calendar_ids를 저장하면 다음부터 자동 입력됩니다.")
-        
+            st.caption("💡 Streamlit Settings → Secrets에 default_calendar_ids를 저장할 수 있습니다.")
+
+    st.subheader("📐 인쇄 레이아웃")
+    st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
+    setting_cols = st.columns(3)
+    with setting_cols[0]:
+        side_margin_cm = st.slider("좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
+    with setting_cols[1]:
+        column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05)
+    with setting_cols[2]:
+        entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
+    st.caption("시간표는 유지하고 2단 본문만 조절합니다. V96.3 기본값: 2.4cm / 0.85cm / 17px")
+
     col1, col2 = st.columns(2)
     with col1:
         start_d = st.date_input("시작 날짜", date.today())
@@ -609,61 +612,124 @@ if service:
         end_d = st.date_input("종료 날짜", date.today())
 
     if (end_d - start_d).days > 100:
-        st.warning("⚠️ 기간이 너무 깁니다(100일 초과). 서버 메모리 부족으로 멈출 수 있습니다.")
+        st.warning("⚠️ 기간이 100일을 넘으면 서버 메모리 부족이 발생할 수 있습니다.")
 
-    if st.button("🚀 일기책 만들기", type="primary"):
-        raw_inputs = [x.strip() for x in manual.split(',') if x.strip()]
-        final_ids = []
-        custom_colors = {}
+    if st.button("📅 캘린더 일기 불러오기", type="primary"):
+        raw_inputs = [x.strip() for x in manual.split(",") if x.strip()]
+        final_ids, custom_colors = [], {}
         for item in raw_inputs:
             if "|" in item:
-                parts = item.split("|", 1)
-                cid = parts[0].strip()
-                color_input = parts[1].strip()
-                final_color = normalize_color(color_input)
+                cid, color_input = item.split("|", 1)
+                cid = cid.strip()
                 final_ids.append(cid)
-                custom_colors[cid] = final_color
+                custom_colors[cid] = normalize_color(color_input.strip())
             else:
                 final_ids.append(item)
-        
-        if not final_ids: st.error("캘린더 ID를 입력해주세요!")
-        elif start_d > end_d: st.error("날짜 선택이 잘못되었습니다.")
+        if not final_ids:
+            st.error("캘린더 ID를 입력해주세요!")
+        elif start_d > end_d:
+            st.error("날짜 선택이 잘못되었습니다.")
         else:
-            with st.spinner("🔥 열심히 굽는 중... (잠시만 기다려주세요)"):
-                daily_data, cal_legend_info, logs = get_events_from_ids(service, final_ids, custom_colors, start_d, end_d)
-                
-                with st.expander("🔎 처리 결과 로그"):
-                    for log in logs:
-                        if "❌" in log: st.error(log)
-                        elif "⚠️" in log: st.warning(log)
-                        else: st.success(log)
-                
-                total_count = sum(len(v['allday']) + len(v['timed']) for v in daily_data.values())
-                if total_count == 0:
-                    st.warning("가져온 일기가 없습니다.")
-                else:
-                    pdf_bytes = create_full_pdf(daily_data, cal_legend_info, final_ids, side_margin_cm, column_gap_cm, entry_gap_px)
-                    st.session_state['pdf_data'] = pdf_bytes
-                    st.session_state['preview_page'] = 1
-                    st.balloons()
-                    st.success(f"완성! 총 {total_count}개의 일기를 담았습니다.")
+            with st.spinner("캘린더에서 일기를 불러오는 중입니다..."):
+                daily_data, cal_legend_info, logs = get_events_from_ids(
+                    service, final_ids, custom_colors, start_d, end_d
+                )
+            total_count = sum(len(v["allday"]) + len(v["timed"]) for v in daily_data.values())
+            with st.expander("🔎 처리 결과 로그"):
+                for log in logs:
+                    if "❌" in log: st.error(log)
+                    elif "⚠️" in log: st.warning(log)
+                    else: st.success(log)
+            if total_count == 0:
+                st.warning("가져온 일기가 없습니다.")
+            else:
+                st.session_state["cached_diary"] = {
+                    "data": daily_data, "legend": cal_legend_info,
+                    "ids": final_ids, "start": start_d, "end": end_d,
+                    "count": total_count,
+                }
+                st.session_state["preview_key"] = None
+                st.session_state["preview_pdf"] = None
+                st.session_state["preview_page"] = 1
+                st.session_state["pdf_data"] = None
+                st.session_state["full_pdf_key"] = None
+                st.success(f"총 {total_count}개 기록을 불러왔습니다. 이제 여백을 조절해 보세요.")
 
-    if st.session_state['pdf_data']:
-        st.download_button("📥 PDF 다운로드", st.session_state['pdf_data'], file_name="MyDiary.pdf")
-        st.subheader("🔍 PDF 미리보기")
-        st.caption("PDF를 다운로드하지 않고 페이지별로 확인할 수 있습니다. 설정을 바꾸면 '일기책 만들기'를 다시 눌러 반영하세요.")
-        try:
-            with fitz.open(stream=st.session_state['pdf_data'], filetype="pdf") as doc:
-                page_count = len(doc)
-                st.caption(f"총 {page_count}페이지")
-                page_no = st.number_input("미리 볼 페이지", min_value=1, max_value=page_count,
-                                          value=min(st.session_state.get('preview_page', 1), page_count),
-                                          step=1, key="preview_page")
-                page = doc.load_page(page_no - 1)
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
-                st.image(pix.tobytes("png"), caption=f"{page_no} / {page_count}페이지", use_container_width=True)
-        except Exception as exc:
-            st.warning("미리보기를 표시하지 못했습니다. PDF 다운로드는 계속 사용할 수 있습니다.")
-            st.caption(f"미리보기 오류 유형: {type(exc).__name__}")
+    cached = st.session_state["cached_diary"]
+    if cached:
+        if cached["start"] != start_d or cached["end"] != end_d:
+            st.warning("선택한 날짜가 불러온 일기의 기간과 다릅니다. 새 기간을 적용하려면 다시 불러오세요.")
+        st.subheader("🔍 실시간 PDF 미리보기")
+        st.caption("전체 일기책 대신 **선택한 하루만** PDF로 렌더링하여 빠르게 확인합니다. 실제 출력 엔진과 동일한 방식입니다.")
+        day_keys = sorted(cached["data"].keys())
+        selected_day = st.selectbox(
+            "미리 볼 날짜", day_keys,
+            format_func=lambda x: str(x),
+        )
+        current_key = (
+            str(selected_day), round(side_margin_cm, 2),
+            round(column_gap_cm, 2), entry_gap_px, FONT_SCALE,
+            id(cached["data"]),
+        )
+        if st.session_state["preview_key"] != current_key:
+            with st.spinner("변경된 여백으로 미리보기를 갱신하는 중..."):
+                try:
+                    st.session_state["preview_pdf"] = create_full_pdf(
+                        {selected_day: cached["data"][selected_day]},
+                        cached["legend"], cached["ids"],
+                        side_margin_cm, column_gap_cm, entry_gap_px,
+                    )
+                    st.session_state["preview_key"] = current_key
+                    st.session_state["preview_page"] = 1
+                except Exception as exc:
+                    st.session_state["preview_pdf"] = None
+                    st.error(f"미리보기 생성 오류: {type(exc).__name__}: {exc}")
+
+        preview_bytes = st.session_state["preview_pdf"]
+        if preview_bytes:
+            try:
+                with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
+                    page_count = len(doc)
+                    st.caption(f"선택 날짜: {page_count}페이지 (첫 페이지는 시간표, 이후는 본문)")
+                    if st.session_state["preview_page"] > page_count:
+                        st.session_state["preview_page"] = page_count
+                    previous, counter, following = st.columns([1, 2, 1])
+                    with previous:
+                        if st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1):
+                            st.session_state["preview_page"] -= 1
+                    with following:
+                        if st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count):
+                            st.session_state["preview_page"] += 1
+                    with counter:
+                        st.markdown(f"**{st.session_state['preview_page']} / {page_count} 페이지**")
+                    page = doc.load_page(st.session_state["preview_page"] - 1)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                    st.image(pix.tobytes("png"), use_container_width=True)
+            except Exception as exc:
+                st.error(f"PDF 표시 오류: {type(exc).__name__}: {exc}")
+
+        st.divider()
+        st.subheader("📚 전체 일기책 출력")
+        st.caption("레이아웃이 마음에 들면 전체 PDF를 생성하세요. 전체 파일은 여백 설정을 바꾼 뒤 다시 생성해야 합니다.")
+        full_key = (round(side_margin_cm, 2), round(column_gap_cm, 2), entry_gap_px,
+                    FONT_SCALE, id(cached["data"]))
+        if st.button("🚀 전체 일기책 PDF 만들기"):
+            with st.spinner("전체 날짜의 PDF를 생성하는 중입니다..."):
+                try:
+                    st.session_state["pdf_data"] = create_full_pdf(
+                        cached["data"], cached["legend"], cached["ids"],
+                        side_margin_cm, column_gap_cm, entry_gap_px,
+                    )
+                    st.session_state["full_pdf_key"] = full_key
+                    st.success("전체 PDF 생성 완료!")
+                except Exception as exc:
+                    st.error(f"전체 PDF 생성 오류: {type(exc).__name__}: {exc}")
+        if st.session_state["pdf_data"]:
+            if st.session_state["full_pdf_key"] != full_key:
+                st.warning("⚠️ 설정이 변경되었습니다. 아래 다운로드 파일은 이전 설정으로 만들어졌습니다. 전체 PDF를 다시 생성하세요.")
+            st.download_button(
+                "📥 전체 PDF 다운로드", st.session_state["pdf_data"],
+                file_name="MyDiary.pdf",
+            )
 else:
     st.error("인증 정보를 불러오지 못했습니다.")

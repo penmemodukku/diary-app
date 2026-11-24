@@ -598,6 +598,9 @@ planner = mode == "플래너"
 st.header(mode + " · 일간 인쇄")
 service, robot_email = get_calendar_service()
 
+body_ready = False
+body_args = None
+body_key = None
 if service:
     with st.sidebar:
         st.header("⚙️ 설정")
@@ -667,7 +670,7 @@ if service:
                 st.session_state["cached_diary"] = {
                     "data": daily_data, "legend": cal_legend_info,
                     "ids": final_ids, "start": start_d, "end": end_d,
-                    "count": total_count,
+                    "count": total_count, "manual": manual,
                 }
                 st.session_state["preview_key"] = None
                 st.session_state["preview_pdf"] = None
@@ -685,89 +688,70 @@ if service:
         print_data = {d: v for d, v in cached["data"].items() if include_empty or v["allday"] or v["timed"]}
         if not print_data:
             st.info("인쇄할 기록이 없습니다. 빈 날짜 인쇄를 선택하세요.")
-            st.stop()
-        day_keys = sorted(print_data.keys())
-        selected_day = st.selectbox(
-            "미리 볼 날짜", day_keys,
-            format_func=lambda x: str(x),
-        )
-        st.subheader("📐 인쇄 레이아웃")
-        st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
-        setting_cols = st.columns(3)
-        with setting_cols[0]:
-            side_margin_cm = st.slider("좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
-        with setting_cols[1]:
-            column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05)
-        with setting_cols[2]:
-            entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
-        st.caption("시간표는 유지하고 2단 본문만 조절합니다. V96.3 기본값: 2.4cm / 0.85cm / 17px")
-        current_key = (
-            str(selected_day), round(side_margin_cm, 2),
-            round(column_gap_cm, 2), entry_gap_px, FONT_SCALE,
-            id(cached["data"]), include_empty,
-        )
-        if st.session_state["preview_key"] != current_key:
-            with st.spinner("변경된 여백으로 미리보기를 갱신하는 중..."):
-                try:
-                    st.session_state["preview_pdf"] = create_full_pdf(
-                        {selected_day: cached["data"][selected_day]},
-                        cached["legend"], cached["ids"],
-                        side_margin_cm, column_gap_cm, entry_gap_px, include_empty,
-                    )
-                    old_key = st.session_state["preview_key"]
-                    if old_key is None or old_key[0] != current_key[0]:
-                        st.session_state["preview_page"] = 1
-                    st.session_state["preview_key"] = current_key
-                except Exception as exc:
-                    st.session_state["preview_pdf"] = None
-                    st.error(f"미리보기 생성 오류: {type(exc).__name__}: {exc}")
-
-        preview_bytes = st.session_state["preview_pdf"]
-        if preview_bytes:
-            try:
-                with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
-                    page_count = len(doc)
-                    st.caption(f"선택 날짜: {page_count}페이지 (첫 페이지는 시간표, 이후는 본문)")
-                    if st.session_state["preview_page"] > page_count:
-                        st.session_state["preview_page"] = page_count
-                    previous, counter, following = st.columns([1, 2, 1])
-                    with previous:
-                        if st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1):
-                            st.session_state["preview_page"] -= 1
-                    with following:
-                        if st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count):
-                            st.session_state["preview_page"] += 1
-                    with counter:
-                        st.markdown(f"**{st.session_state['preview_page']} / {page_count} 페이지**")
-                    page = doc.load_page(st.session_state["preview_page"] - 1)
-                    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
-                    st.image(pix.tobytes("png"), use_container_width=True)
-            except Exception as exc:
-                st.error(f"PDF 표시 오류: {type(exc).__name__}: {exc}")
-
-        st.divider()
-        st.subheader(f"📚 전체 {mode} 출력")
-        st.caption("레이아웃이 마음에 들면 전체 PDF를 생성하세요. 전체 파일은 여백 설정을 바꾼 뒤 다시 생성해야 합니다.")
-        full_key = (round(side_margin_cm, 2), round(column_gap_cm, 2), entry_gap_px,
-                    FONT_SCALE, id(cached["data"]), include_empty)
-        if st.button(f"🚀 전체 {mode} PDF 만들기"):
-            with st.spinner("전체 날짜의 PDF를 생성하는 중입니다..."):
-                try:
-                    st.session_state["pdf_data"] = create_full_pdf(
-                        print_data, cached["legend"], cached["ids"],
-                        side_margin_cm, column_gap_cm, entry_gap_px, include_empty,
-                    )
-                    st.session_state["full_pdf_key"] = full_key
-                    st.success("전체 PDF 생성 완료!")
-                except Exception as exc:
-                    st.error(f"전체 PDF 생성 오류: {type(exc).__name__}: {exc}")
-        if st.session_state["pdf_data"]:
-            if st.session_state["full_pdf_key"] != full_key:
-                st.warning("⚠️ 설정이 변경되었습니다. 아래 다운로드 파일은 이전 설정으로 만들어졌습니다. 전체 PDF를 다시 생성하세요.")
-            st.download_button(
-                "📥 전체 PDF 다운로드", st.session_state["pdf_data"],
-                file_name="Planner.pdf" if planner else "MyDiary.pdf",
+        else:
+            day_keys = sorted(print_data.keys())
+            selected_day = st.selectbox(
+                "미리 볼 날짜", day_keys,
+                format_func=lambda x: str(x),
             )
+            st.subheader("📐 인쇄 레이아웃")
+            st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
+            setting_cols = st.columns(3)
+            with setting_cols[0]:
+                side_margin_cm = st.slider("좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
+            with setting_cols[1]:
+                column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05)
+            with setting_cols[2]:
+                entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
+            st.caption("시간표는 유지하고 2단 본문만 조절합니다. V96.3 기본값: 2.4cm / 0.85cm / 17px")
+            current_key = (
+                str(selected_day), round(side_margin_cm, 2),
+                round(column_gap_cm, 2), entry_gap_px, FONT_SCALE,
+                id(cached["data"]), include_empty,
+            )
+            if st.session_state["preview_key"] != current_key:
+                with st.spinner("변경된 여백으로 미리보기를 갱신하는 중..."):
+                    try:
+                        st.session_state["preview_pdf"] = create_full_pdf(
+                            {selected_day: cached["data"][selected_day]},
+                            cached["legend"], cached["ids"],
+                            side_margin_cm, column_gap_cm, entry_gap_px, include_empty,
+                        )
+                        old_key = st.session_state["preview_key"]
+                        if old_key is None or old_key[0] != current_key[0]:
+                            st.session_state["preview_page"] = 1
+                        st.session_state["preview_key"] = current_key
+                    except Exception as exc:
+                        st.session_state["preview_pdf"] = None
+                        st.error(f"미리보기 생성 오류: {type(exc).__name__}: {exc}")
+
+            preview_bytes = st.session_state["preview_pdf"]
+            if preview_bytes:
+                try:
+                    with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
+                        page_count = len(doc)
+                        st.caption(f"선택 날짜: {page_count}페이지 (첫 페이지는 시간표, 이후는 본문)")
+                        if st.session_state["preview_page"] > page_count:
+                            st.session_state["preview_page"] = page_count
+                        previous, counter, following = st.columns([1, 2, 1])
+                        with previous:
+                            if st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1):
+                                st.session_state["preview_page"] -= 1
+                        with following:
+                            if st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count):
+                                st.session_state["preview_page"] += 1
+                        with counter:
+                            st.markdown(f"**{st.session_state['preview_page']} / {page_count} 페이지**")
+                        page = doc.load_page(st.session_state["preview_page"] - 1)
+                        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                        st.image(pix.tobytes("png"), use_container_width=True)
+                except Exception as exc:
+                    st.error(f"PDF 표시 오류: {type(exc).__name__}: {exc}")
+
+            body_args = (print_data, cached["legend"], cached["ids"], side_margin_cm, column_gap_cm, entry_gap_px, include_empty)
+            body_key = (mode, id(cached["data"]), side_margin_cm, column_gap_cm, entry_gap_px, FONT_SCALE, include_empty)
+            body_ready = cached["start"] == start_d and cached["end"] == end_d and cached.get("manual", manual) == manual
+
 else:
     st.error("인증 정보를 불러오지 못했습니다.")
 
@@ -833,33 +817,33 @@ def merge_photo_pdf(diary, photos):
 st.divider()
 st.header(f'📷 {mode} 사진 기록 부록')
 st.caption('일기와 플래너의 사진은 각각 따로 보관됩니다. 사진은 현재 세션에서 처리하며 클라우드 서버로 전송됩니다. 민감한 사진은 비공개 앱에서만 사용하세요.')
-# Keep both upload widgets mounted so Streamlit does not discard inactive uploads.
-photo_modes = ('일기', '플래너')
-for pm in photo_modes:
-    with st.expander(f'{pm} 사진 업로드', expanded=(pm == mode)):
-        st.file_uploader(f'{pm} 사진을 여기에 끌어다 놓으세요', type=['jpg','jpeg','png','heic','heif','webp'], accept_multiple_files=True, key='v9801_upload_'+pm)
-files = st.session_state.get('v9801_upload_'+mode, [])
-prefix = 'v9801_'+mode+'_'
+# Persist processed photos independently of transient uploader widgets.
+prefix = 'v9802_'+mode+'_'
 state = st.session_state.setdefault(prefix+'state', {})
-cache = state.setdefault('cache', {})
+active = state.setdefault('active', {})
 settings = state.setdefault('settings', {})
-active = {}
-for f in files or []:
-    raw = f.getvalue()
-    key = hashlib.sha256(raw).hexdigest()
-    if key in active:
-        st.caption(f'중복 사진 제외: {f.name}')
-        continue
-    try:
-        if key not in cache:
-            cache[key] = read_photo(raw)
-        active[key] = (f.name, *cache[key])
-    except Exception as e:
-        st.warning(f'{f.name}: 사진을 읽지 못했습니다 ({type(e).__name__})')
-for key in list(cache):
-    if key not in active:
-        del cache[key]
-        settings.pop(key, None)
+files = st.file_uploader('사진 업로드', type=['jpg','jpeg','png','heic','heif','webp'], accept_multiple_files=True, key=prefix+'upload_'+str(state.get('upload_epoch',0)))
+if files:
+    for f in files:
+        raw = f.getvalue()
+        key = hashlib.sha256(raw).hexdigest()
+        if key not in active:
+            try:
+                active[key] = (f.name, *read_photo(raw))
+            except Exception as e:
+                st.warning(f'{f.name}: 사진을 읽지 못했습니다 ({type(e).__name__})')
+    state['upload_epoch'] = state.get('upload_epoch',0)+1
+    st.rerun()
+st.caption('업로드한 사진은 아래 목록에 보관됩니다. 삭제 버튼으로 제거할 수 있습니다.')
+records = []
+cols = state.get('cols',3)
+signature = None
+if active and st.button('사진 모두 삭제', key=prefix+'clear'):
+    active.clear()
+    settings.clear()
+    state.pop('pdf',None)
+    state.pop('sig',None)
+    st.rerun()
 if active:
     st.caption(f'{mode} 사진 {len(active)}장')
     cols = st.radio('사진 배열', [1,2,3,4], index=[1,2,3,4].index(state.get('cols',3)), horizontal=True, format_func=lambda x:f'{x}열', key=prefix+'cols')
@@ -878,6 +862,10 @@ if active:
                 day = st.date_input('기록 귀속일 (사진을 넣을 날짜)', value=saved['day'], min_value=date(1900,1,1), max_value=date(2100,12,31), key=prefix+'day_'+key)
                 caption = st.text_area('사진 설명', value=saved['caption'], key=prefix+'caption_'+key, max_chars=300)
                 include = st.checkbox('출력에 포함', value=saved['include'], key=prefix+'include_'+key)
+            if st.button('이 사진 삭제', key=prefix+'delete_'+key):
+                active.pop(key,None)
+                settings.pop(key,None)
+                st.rerun()
             saved.update(day=day,caption=caption,include=include)
             if include and day is None:
                 st.warning('위 날짜 입력란에서 기록 귀속일을 지정해 주세요.')
@@ -901,18 +889,42 @@ if active:
             p = st.selectbox('사진 부록 페이지', list(range(1,len(doc)+1)), index=min(state.get('page',1),len(doc))-1, key=prefix+'page_'+hashlib.sha256(photo_bytes).hexdigest()[:16])
             state['page'] = p
             st.image(doc[p-1].get_pixmap(matrix=fitz.Matrix(1.5,1.5)).tobytes('png'),use_container_width=True)
-        st.download_button('사진 부록만 다운로드', photo_bytes, file_name='PhotoAppendix.pdf', key=prefix+'download')
-        diary = st.session_state.get('pdf_data')
-        if diary:
-            st.caption(f'결합 파일은 마지막으로 생성한 전체 {mode} PDF 뒤에 사진을 붙입니다. 설정을 바꿨다면 전체 PDF부터 다시 생성하세요. 사진 날짜 범위는 자동 제한하지 않습니다.')
-            combined_sig = (hashlib.sha256(diary).digest(),hashlib.sha256(photo_bytes).digest())
-            if st.button(f'{mode} + 사진 결합 PDF 만들기',key=prefix+'merge'):
-                state['combined'] = merge_photo_pdf(diary,photo_bytes)
-                state['combined_sig'] = combined_sig
-            if state.get('combined_sig') == combined_sig:
-                st.download_button(f'{mode} + 사진 PDF 다운로드',state['combined'],file_name='DiaryWithPhotos.pdf',key=prefix+'combined_download')
     elif photo_bytes:
         st.info('사진 설정이 변경되었습니다. 미리보기 버튼을 다시 눌러주세요.')
 else:
     for k in ('pdf','sig','combined','combined_sig','page'):
         state.pop(k,None)
+
+# Unified export: each action generates its own current inputs.
+st.divider()
+st.header('📄 PDF 출력')
+st.caption('원하는 출력 방식을 선택하세요. 다른 PDF를 먼저 만들 필요가 없습니다.')
+if not body_ready:
+    st.info(f'{mode} 본문을 출력하려면 현재 날짜와 캘린더 설정으로 먼저 기록을 불러오세요.')
+if not records:
+    st.caption('사진 부록을 출력하려면 사진을 추가하고 기록 날짜를 지정하세요.')
+export_options = [
+    ('body', f'{mode} PDF 생성', body_ready, body_key, 'Planner.pdf' if planner else 'MyDiary.pdf'),
+    ('photos', '사진 부록 PDF 생성', bool(records), signature, 'PhotoAppendix.pdf'),
+    ('combined', f'{mode} + 사진 부록 PDF 생성', body_ready and bool(records), (body_key, signature), 'PlannerWithPhotos.pdf' if planner else 'DiaryWithPhotos.pdf'),
+]
+exports = state.setdefault('exports', {})
+for kind, label, ready, sig, filename in export_options:
+    if st.button(label, key=prefix+'export_'+kind, disabled=not ready, use_container_width=True, type='primary' if kind=='combined' else 'secondary'):
+        exports.pop(kind,None)
+        try:
+            with st.spinner('최신 설정으로 PDF를 생성하는 중입니다...'):
+                if kind == 'body':
+                    result = create_full_pdf(*body_args)
+                elif kind == 'photos':
+                    result = photo_pdf(records, cols)
+                else:
+                    result = merge_photo_pdf(create_full_pdf(*body_args), photo_pdf(records, cols))
+                exports[kind] = (sig, result)
+            st.success('PDF 생성 완료!')
+        except Exception as e:
+            st.error(f'PDF 생성 실패: {type(e).__name__}: {e}')
+    if ready and kind in exports and exports[kind][0] == sig:
+        st.download_button(label.replace('생성','다운로드'), exports[kind][1], file_name=filename, mime='application/pdf', key=prefix+'export_download_'+kind)
+    elif kind in exports:
+        exports.pop(kind,None)

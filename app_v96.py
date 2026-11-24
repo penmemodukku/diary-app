@@ -1,3 +1,4 @@
+# V98.0.3 — 날짜 머리글 위치 및 구분선 통일
 # V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
 # V96.3 — 캘린더 ID 자동 불러오기
 # V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
@@ -466,12 +467,14 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4
         @page {{ size: A4; margin: 1.5cm; }}
         
         @page text_layer {{
-            margin-top: 2.5cm;
+            margin-top: 3.2cm;
             margin-left: {side_margin_cm:.2f}cm;
             margin-right: {side_margin_cm:.2f}cm; 
             @top-center {{
-                content: element(headerContent); 
-                width: 100%;
+                content: element(headerContent);
+                width: 17.5766667cm;
+                vertical-align: top;
+                padding-top: 1.7116667cm;
             }}
         }}
         
@@ -506,7 +509,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4
             position: running(headerContent); 
             font-size: 16pt; font-weight: bold; color: #3e2723; 
             border-bottom: 2px solid #5d4037; 
-            padding-bottom: 5px; margin-bottom: 20px; 
+            padding-bottom: 5px; margin: 0; 
             width: 100%; text-align: left;
         }}
         
@@ -698,12 +701,12 @@ if service:
             st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
             setting_cols = st.columns(3)
             with setting_cols[0]:
-                side_margin_cm = st.slider("좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
+                side_margin_cm = st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
             with setting_cols[1]:
                 column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05)
             with setting_cols[2]:
                 entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
-            st.caption("시간표는 유지하고 2단 본문만 조절합니다. V96.3 기본값: 2.4cm / 0.85cm / 17px")
+            st.caption("시간표와 날짜 머리글은 고정하고 2단 본문만 조절합니다. V96.3 기본값: 2.4cm / 0.85cm / 17px")
             current_key = (
                 str(selected_day), round(side_margin_cm, 2),
                 round(column_gap_cm, 2), entry_gap_px, FONT_SCALE,

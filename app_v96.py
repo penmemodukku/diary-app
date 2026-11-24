@@ -1,4 +1,4 @@
-# V98.1.3 — 주간 가독성 및 생략 표시
+# V98.2 — 주간 가독성 및 생략 표시
 # V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
 # V96.3 — 캘린더 ID 자동 불러오기
 # V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
@@ -576,6 +576,7 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
     # Measure each column using the same renderer and font as the final PDF.
     fc = FontConfiguration()
     width = (297 - 20 * side_margin_cm) / 7
+    monthly = layout.startswith("월간")
     height = 157
     def event_html(e, title):
         color = str(e.get('real_color', '#555555'))
@@ -589,7 +590,7 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
         size = 8 * font_scale
         gap = max(1, min(2, entry_gap_px / 15))
         if not titles: return '', size, gap
-        limit = (height - 3) * 96 / 25.4
+        limit = (height - (7 if monthly else 3)) * 96 / 25.4
         def important(e):
             name = e.get('calendar_name') or legend.get(e.get('calendar_id'), {}).get('name', '')
             name = unicodedata.normalize('NFKC', str(name)).replace(' ', '')
@@ -648,16 +649,33 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
             if measure(html,sz,gap)<=limit: return html,sz,gap
         return content([],ts),sz,gap
     with fitz.open() as out:
-        for w in sorted({week_start(d) for d in daily_data}):
-            heads=[]; cells=[]
-            for i in range(7):
-                d=w+timedelta(days=i); data=daily_data.get(d,{'allday':[],'timed':[]})
-                heads.append(f'{d.month}/{d.day} ({days[i]})')
-                content,size,gap=fit_column(data['allday']+data['timed'])
-                cells.append(f'<td><div style="font-size:{size}pt;--gap:{gap}mm">{content}</div></td>')
-            title=f'{w:%Y.%m.%d} — {w+timedelta(days=6):%Y.%m.%d}'
-            body='<table><tr>'+''.join('<th>'+h+'</th>' for h in heads)+'</tr><tr>'+''.join(cells)+'</tr></table>'
-            css=f"""@page {{size:A4 landscape;margin:12mm {side_margin_cm}cm;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;}} th {{background:#f1eee8;font-weight:normal;}} td {{height:{height}mm;}} .event {{margin-bottom:var(--gap);}}"""+style(8*font_scale,0)+'.event {margin-bottom:var(--gap);}'
+        import calendar
+        if monthly:
+            first=min(daily_data).replace(day=1)
+            weeks=calendar.Calendar(firstweekday=6).monthdatescalendar(first.year,first.month)
+            split=layout.endswith('두 장')
+            cut=(len(weeks)+1)//2
+            groups=[weeks[:cut],weeks[cut:]] if split else [weeks]
+            pages=[(f'{first.year}년 {first.month}월'+(f' ({i+1}/2)' if split else ''),g) for i,g in enumerate(groups)]
+        else:
+            pages=[(f'{w:%Y.%m.%d} — {w+timedelta(days=6):%Y.%m.%d}',[[w+timedelta(days=i) for i in range(7)]]) for w in sorted({week_start(d) for d in daily_data})]
+        for title, rows in pages:
+            height=157/len(rows)- (6 if monthly else 0)
+            body='<table>'
+            if monthly: body+='<tr>'+''.join('<th>'+h+'</th>' for h in days)+'</tr>'
+            for row in rows:
+                heads=[]; cells=[]
+                for i,d in enumerate(row):
+                    data=daily_data.get(d,{'allday':[],'timed':[]})
+                    heads.append(f'{d.month}/{d.day} ({days[i]})')
+                    active=not monthly or d.month==first.month
+                    content,size,gap=fit_column(data['allday']+data['timed']) if active else ('',8*font_scale,1)
+                    label=f'<div class="date-label">{d.day}</div>' if monthly and active else ''
+                    cells.append(f'<td style="background:{"#fff" if active else "#f7f6f4"}">{label}<div style="font-size:{size}pt;--gap:{gap}mm">{content}</div></td>')
+                if not monthly: body+='<tr>'+''.join('<th>'+h+'</th>' for h in heads)+'</tr>'
+                body+='<tr>'+''.join(cells)+'</tr>'
+            body+='</table>'
+            css=f"""@page {{size:A4 landscape;margin:12mm {side_margin_cm}cm;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;}} th {{background:#f1eee8;font-weight:normal;}} td {{height:{height}mm;}} .event {{margin-bottom:var(--gap);}}"""+style(8*font_scale,0)+'.event {margin-bottom:var(--gap);} .date-label {font-size:8pt;height:4mm;color:#555;} '
             pdf=HTML(string='<meta charset="utf-8"><body><h1>'+title+'</h1>'+body+'</body>').write_pdf(stylesheets=[CSS(string=css,font_config=fc)],font_config=fc)
             with fitz.open(stream=pdf,filetype='pdf') as doc:
                 if len(doc)!=1: raise RuntimeError('주간 양식을 한 페이지에 배치하지 못했습니다. 글자 크기 또는 여백을 줄여 주세요.')
@@ -702,7 +720,7 @@ if mode is None:
     st.stop()
 planner = mode == "플래너"
 st.header(mode + " · 인쇄")
-layout = st.radio("인쇄 양식", ["일간", "주간"], horizontal=True, key="v9812_layout_"+mode)
+layout = st.radio("인쇄 양식", ["일간", "주간", "월간"], horizontal=True, key="v9812_layout_"+mode)
 service, robot_email = get_calendar_service()
 
 body_ready = False
@@ -754,7 +772,7 @@ if service:
         st.subheader('인쇄할 캘린더')
         if st.button('캘린더 목록 새로고침'):
             del st.session_state[catalog_key]; st.rerun()
-        final_ids=[cid for cid,name in catalog.items() if st.checkbox(name,value=True,key='v982_cal_'+mode+cid)]
+        final_ids=[cid for cid,name in catalog.items() if st.checkbox(name,value=(layout!='월간' or planner or '긍정' in name or '부정' in name or not any('긍정' in n or '부정' in n for n in catalog.values())),key='v982_cal_'+mode+layout+cid)]
         st.caption('현재는 서비스 계정에 공유된 캘린더만 표시됩니다. 누락된 캘린더는 ID를 추가하세요.')
     if layout=='일간':
         col1,col2=st.columns(2)
@@ -763,6 +781,15 @@ if service:
         with col2:
             end_d=st.date_input('종료 날짜',today,min_value=today if planner else date(1900,1,1),max_value=date(2100,12,31) if planner else today,key='v98_end_'+mode)
         include_empty=st.checkbox('일정이 없는 날짜도 인쇄',value=planner,key='v98_empty_'+mode)
+    elif layout=='월간':
+        import calendar
+        years=list(range(today.year,2101)) if planner else list(range(today.year,1899,-1))
+        year=st.selectbox('연도',years,key='monthly_year_'+mode)
+        months=[m for m in range(1,13) if (year!=today.year or (m>=today.month if planner else m<=today.month))]
+        month=st.selectbox('월',months,index=months.index(today.month) if today.month in months else 0,format_func=lambda m:f'{m}월',key='monthly_month_'+mode)
+        start_d=date(year,month,1); end_d=date(year,month,calendar.monthrange(year,month)[1]); include_empty=True
+        monthly_pages=st.radio('페이지 구성',['한 장','두 장'],horizontal=True,key='monthly_pages_'+mode)
+        layout='월간 '+monthly_pages
     else:
         years=list(range(today.year,2101)) if planner else list(range(today.year,1899,-1))
         year=st.selectbox('연도',years,key='v982_year_'+mode)
@@ -818,15 +845,15 @@ if service:
         if cached["start"] != start_d or cached["end"] != end_d:
             st.warning("선택한 날짜가 불러온 일기의 기간과 다릅니다. 새 기간을 적용하려면 다시 불러오세요.")
         st.subheader("🔍 실시간 PDF 미리보기")
-        st.caption("선택한 하루 또는 한 주의 실제 PDF를 미리 봅니다. 주간은 일요일부터 토요일까지 한 페이지로 표시합니다.")
+        st.caption("선택한 하루 또는 한 주의 실제 PDF를 미리 봅니다. 주간은 한 페이지, 월간은 선택한 한 장 또는 두 장으로 표시합니다.")
         print_data = {d: v for d, v in cached["data"].items() if include_empty or v["allday"] or v["timed"]}
         if not print_data:
             st.info("인쇄할 기록이 없습니다. 빈 날짜 인쇄를 선택하세요.")
         else:
-            day_keys = sorted(print_data.keys()) if layout=="일간" else sorted({week_start(d) for d in print_data})
+            day_keys = [start_d] if layout.startswith("월간") else sorted(print_data.keys()) if layout=="일간" else sorted({week_start(d) for d in print_data})
             selected_day = st.selectbox(
-                "미리 볼 날짜" if layout=="일간" else "미리 볼 주", day_keys,
-                format_func=lambda x: str(x) if layout=="일간" else f"{x} ~ {x+timedelta(days=6)}", key="v981_preview_"+mode+layout,
+                "미리 볼 월" if layout.startswith("월간") else "미리 볼 날짜" if layout=="일간" else "미리 볼 주", day_keys,
+                format_func=lambda x: f"{x.year}년 {x.month}월" if layout.startswith("월간") else str(x) if layout=="일간" else f"{x} ~ {x+timedelta(days=6)}", key="v981_preview_"+mode+layout,
             )
             st.subheader("📐 인쇄 레이아웃")
             st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
@@ -840,7 +867,7 @@ if service:
                 column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05, disabled=layout!="일간")
             with setting_cols[2]:
                 entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
-            st.caption("일간은 2단 본문만 조절합니다. 주간은 용지 좌우 여백과 사건 간격을 조절합니다.")
+            st.caption("일간은 2단 본문만 조절합니다. 주간·월간은 용지 좌우 여백과 사건 간격을 조절합니다.")
             current_key = (
                 str(selected_day), round(side_margin_cm, 2),
                 round(column_gap_cm, 2), entry_gap_px, FONT_SCALE,
@@ -850,7 +877,7 @@ if service:
                 with st.spinner("변경된 설정으로 미리보기를 갱신하는 중..."):
                     try:
                         st.session_state["preview_pdf"] = render_body(
-                            {selected_day: cached["data"][selected_day]} if layout=="일간" else {d:v for d,v in print_data.items() if week_start(d)==selected_day},
+                            print_data if layout.startswith("월간") else {selected_day: cached["data"][selected_day]} if layout=="일간" else {d:v for d,v in print_data.items() if week_start(d)==selected_day},
                             cached["legend"], cached["ids"],
                             side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE, layout,
                         )
@@ -867,7 +894,7 @@ if service:
                 try:
                     with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
                         page_count = len(doc)
-                        st.caption(f"선택 기간: {page_count}페이지" + (" (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (한 주당 한 페이지)"))
+                        st.caption(f"선택 기간: {page_count}페이지" + (" (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (월간)" if layout.startswith("월간") else " (한 주당 한 페이지)"))
                         if st.session_state["preview_page"] > page_count:
                             st.session_state["preview_page"] = page_count
                         previous, counter, following = st.columns([1, 2, 1])

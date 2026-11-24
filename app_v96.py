@@ -594,17 +594,6 @@ if service:
         else:
             st.caption("💡 Streamlit Settings → Secrets에 default_calendar_ids를 저장할 수 있습니다.")
 
-    st.subheader("📐 인쇄 레이아웃")
-    st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
-    setting_cols = st.columns(3)
-    with setting_cols[0]:
-        side_margin_cm = st.slider("좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
-    with setting_cols[1]:
-        column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05)
-    with setting_cols[2]:
-        entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
-    st.caption("시간표는 유지하고 2단 본문만 조절합니다. V96.3 기본값: 2.4cm / 0.85cm / 17px")
-
     col1, col2 = st.columns(2)
     with col1:
         start_d = st.date_input("시작 날짜", date.today())
@@ -666,6 +655,16 @@ if service:
             "미리 볼 날짜", day_keys,
             format_func=lambda x: str(x),
         )
+        st.subheader("📐 인쇄 레이아웃")
+        st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
+        setting_cols = st.columns(3)
+        with setting_cols[0]:
+            side_margin_cm = st.slider("좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
+        with setting_cols[1]:
+            column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05)
+        with setting_cols[2]:
+            entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
+        st.caption("시간표는 유지하고 2단 본문만 조절합니다. V96.3 기본값: 2.4cm / 0.85cm / 17px")
         current_key = (
             str(selected_day), round(side_margin_cm, 2),
             round(column_gap_cm, 2), entry_gap_px, FONT_SCALE,
@@ -679,8 +678,10 @@ if service:
                         cached["legend"], cached["ids"],
                         side_margin_cm, column_gap_cm, entry_gap_px,
                     )
+                    old_key = st.session_state["preview_key"]
+                    if old_key is None or old_key[0] != current_key[0]:
+                        st.session_state["preview_page"] = 1
                     st.session_state["preview_key"] = current_key
-                    st.session_state["preview_page"] = 1
                 except Exception as exc:
                     st.session_state["preview_pdf"] = None
                     st.error(f"미리보기 생성 오류: {type(exc).__name__}: {exc}")

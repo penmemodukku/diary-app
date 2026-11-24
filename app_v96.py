@@ -572,51 +572,46 @@ def week_start(d):
 def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, entry_gap_px, include_empty, font_scale, layout):
     from html import escape
     import re
-    weeks = sorted({week_start(d) for d in daily_data})
-    pages = []
     days = ['일','월','화','수','목','금','토']
-    for w in weeks:
-        items = []
-        for i in range(7):
-            d = w + timedelta(days=i)
-            data = daily_data.get(d)
-            entries = []
-            if data:
-                for e in data['allday'] + data['timed']:
-                    color = str(e.get('real_color','#555555'))
-                    if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?',color): color = '#555555'
-                    stamp = '종일' if 'date' in e.get('start',{}) else max(e['dt_object'],datetime.combine(d,datetime.min.time()).replace(tzinfo=KST)).strftime('%H:%M')
-                    title = escape(str(e.get('summary') or '(제목 없음)'))
-                    entries.append(f'<div class="event" style="border-left-color:{color}"><span class="time">{stamp}</span> <span style="color:{color}">{title}</span></div>')
-            items.append((d, entries, data is not None))
-        # Bound each page by measured text layout: render, then reduce the number of entries per day if necessary.
-        # A continuation page retains the same seven day headings; no titles are discarded.
-        offsets = [0]*7
-        first = True
-        while first or any(offsets[i]<len(items[i][1]) for i in range(7)):
-            first = False
-            limit = 12 if layout=='주간 그리드형' else 4
-            while True:
-                cells=[]
-                for i,(d,entries,active) in enumerate(items):
-                    head=f'<div class="day d{i}">{d.month}/{d.day} ({days[i]})</div>'
-                    content=''.join(entries[offsets[i]:offsets[i]+limit]) if active else '<span class="muted">선택 범위 밖 / 제외</span>'
-                    cells.append((head,content))
-                if layout=='주간 그리드형':
-                    body='<table class="grid"><tr>'+''.join('<th>'+h+'</th>' for h,c in cells)+'</tr><tr>'+''.join('<td>'+c+'</td>' for h,c in cells)+'</tr></table>'
-                else:
-                    body='<table class="list">'+''.join('<tr><th>'+h+'</th><td>'+c+'</td></tr>' for h,c in cells)+'</table>'
-                title=f'{w:%Y.%m.%d} — {w+timedelta(days=6):%Y.%m.%d}' + (' (계속)' if any(offsets) else '')
-                css=f"""@page {{size:A4 landscape;margin:15mm {side_margin_cm}cm;}} body {{font-family:NanumGothic,sans-serif;font-size:{9*font_scale}pt;color:#332c28;margin:0;}} h1 {{font-size:16pt;border-bottom:1.5pt solid #63473c;padding-bottom:3mm;margin:0 0 4mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:0.6pt solid #bdb6ad;vertical-align:top;padding:2mm;overflow-wrap:anywhere;}} th {{background:#f1eee8;font-weight:normal;}} .grid td {{height:145mm;}} .list th {{width:22mm;}} .list td {{height:17mm;}} .event {{border-left:2pt solid #777;padding-left:1mm;margin-bottom:{max(1,entry_gap_px/8):g}mm;overflow-wrap:anywhere;}} .time,.muted {{font-size:{7*font_scale}pt;color:#666;}} .d0 {{color:#a34c44;}} .d6 {{color:#42658b;}}"""
-                pdf=HTML(string='<html><meta charset="utf-8"><body><h1>'+title+'</h1>'+body+'</body></html>').write_pdf(stylesheets=[CSS(string=css)])
-                with fitz.open(stream=pdf,filetype='pdf') as doc: count=len(doc)
-                if count==1 or limit==1: break
-                limit=max(1,limit//2)
-            pages.append(pdf)
-            offsets=[min(len(items[i][1]),offsets[i]+limit) for i in range(7)]
+    def shorten(t,n):
+        t=' '.join(str(t).split())
+        return t if len(t)<=n else t[:max(1,n-1)]+'…'
+    def event_html(e, title_limit, desc_limit=0):
+        color=str(e.get('real_color','#555555'))
+        if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?',color): color='#555555'
+        title=escape(shorten(e.get('summary') or '(제목 없음)',title_limit))
+        desc=escape(shorten(re.sub(r'<[^>]*>',' ',str(e.get('description') or '')),desc_limit)) if desc_limit and e.get('description') else ''
+        return f'<div class="event" style="border-left-color:{color}"><b style="color:{color}">{title}</b>'+ (f'<div class="desc">{desc}</div>' if desc else '')+'</div>'
+    def extra(n): return f'<div class="extra">(외 {n}건)</div>' if n else ''
     with fitz.open() as out:
-        for pdf in pages:
-            with fitz.open(stream=pdf,filetype='pdf') as doc: out.insert_pdf(doc)
+        for w in sorted({week_start(d) for d in daily_data}):
+            entries=[]
+            for i in range(7):
+                d=w+timedelta(days=i); data=daily_data.get(d,{'allday':[],'timed':[]})
+                entries.append(data['allday']+data['timed'])
+            title=f'{w:%Y.%m.%d} — {w+timedelta(days=6):%Y.%m.%d}'
+            # progressively reduce content until the actual PDF fits one page
+            for cap in [24,16,12,8,6,4,3,2,1,0]:
+                heads=[f'{(w+timedelta(days=i)).month}/{(w+timedelta(days=i)).day} ({days[i]})' for i in range(7)]
+                if layout=='주간 그리드형':
+                    cells=[]
+                    for es in entries:
+                        n=min(len(es),cap); desc=max(0,min(220,300//max(n,1)-30))
+                        cells.append(''.join(event_html(e, max(12,min(65,180//max(n,1))),desc) for e in es[:n])+extra(len(es)-n))
+                    body='<table class="grid"><tr>'+''.join('<th>'+h+'</th>' for h in heads)+'</tr><tr>'+''.join('<td>'+c+'</td>' for c in cells)+'</tr></table>'
+                else:
+                    rows=[]
+                    for h,es in zip(heads,entries):
+                        n=min(len(es),cap,12); cols=min(4,max(2,math.ceil(n/3))); per=max(1,math.ceil(n/cols))
+                        cells=[''.join(event_html(e, max(12,64//cols)) for e in es[j*per:min(n,(j+1)*per)]) for j in range(cols)]
+                        rows.append('<tr><th>'+h+'</th><td><table class="inner"><tr>'+''.join('<td>'+c+'</td>' for c in cells)+'</tr></table>'+extra(len(es)-n)+'</td></tr>')
+                    body='<table class="list">'+''.join(rows)+'</table>'
+                css=f"""@page {{size:A4 landscape;margin:12mm {side_margin_cm}cm;}} body {{font-family:NanumGothic,sans-serif;font-size:{8*font_scale}pt;color:#332c28;margin:0;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;overflow-wrap:break-word;}} th {{background:#f1eee8;font-weight:normal;}} .grid td {{height:150mm;}} .list th {{width:20mm;}} .list > tbody > tr > td {{height:20mm;}} .inner td {{border:0;border-right:.4pt solid #ddd;padding:.5mm;}} .event {{border-left:1.5pt solid #777;padding-left:1mm;margin-bottom:{min(2,entry_gap_px/15):g}mm;overflow-wrap:break-word;}} .desc,.extra {{font-size:{7*font_scale}pt;color:#555;}}"""
+                pdf=HTML(string='<html><meta charset="utf-8"><body><h1>'+title+'</h1>'+body+'</body></html>').write_pdf(stylesheets=[CSS(string=css)])
+                with fitz.open(stream=pdf,filetype='pdf') as doc:
+                    if len(doc)==1:
+                        out.insert_pdf(doc); break
+            else: raise RuntimeError('주간 양식을 한 페이지에 배치하지 못했습니다.')
         return out.tobytes(garbage=3,deflate=True)
 
 def render_body(*args):
@@ -680,12 +675,53 @@ if service:
         else:
             st.caption("💡 Streamlit Settings → Secrets에 default_calendar_ids를 저장할 수 있습니다.")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        start_d = st.date_input("시작 날짜", today, min_value=today if planner else date(1900,1,1), max_value=date(2100,12,31) if planner else today, key="v98_start_"+mode)
-    with col2:
-        end_d = st.date_input("종료 날짜", today, min_value=today if planner else date(1900,1,1), max_value=date(2100,12,31) if planner else today, key="v98_end_"+mode)
-    include_empty = st.checkbox("일정이 없는 날짜도 인쇄", value=planner, key="v98_empty_"+mode)
+    # Resolve configured calendars and calendars visible to the service account.
+    configured, custom_colors = {}, {}
+    for item in manual.split(','):
+        cid, sep, color = item.strip().partition('|'); cid=cid.strip()
+        if cid:
+            configured[cid]=cid
+            if sep: custom_colors[cid]=normalize_color(color.strip())
+    catalog_key='v982_catalog_'+manual
+    if catalog_key not in st.session_state:
+        catalog=dict(configured)
+        try:
+            token=None
+            while True:
+                result=service.calendarList().list(pageToken=token).execute()
+                for c in result.get('items',[]):
+                    catalog[c['id']]=c.get('summaryOverride') or c.get('summary') or c['id']
+                    if c['id'] not in custom_colors and c.get('backgroundColor'): custom_colors[c['id']]=c['backgroundColor']
+                token=result.get('nextPageToken')
+                if not token: break
+        except Exception: pass
+        for cid in configured:
+            try: catalog[cid]=service.calendars().get(calendarId=cid).execute().get('summary',cid)
+            except Exception: pass
+        st.session_state[catalog_key]=(catalog,custom_colors)
+    catalog,custom_colors=st.session_state[catalog_key]
+    with st.sidebar:
+        st.subheader('인쇄할 캘린더')
+        if st.button('캘린더 목록 새로고침'):
+            del st.session_state[catalog_key]; st.rerun()
+        final_ids=[cid for cid,name in catalog.items() if st.checkbox(name,value=True,key='v982_cal_'+mode+cid)]
+        st.caption('현재는 서비스 계정에 공유된 캘린더만 표시됩니다. 누락된 캘린더는 ID를 추가하세요.')
+    if layout=='일간':
+        col1,col2=st.columns(2)
+        with col1:
+            start_d=st.date_input('시작 날짜',today,min_value=today if planner else date(1900,1,1),max_value=date(2100,12,31) if planner else today,key='v98_start_'+mode)
+        with col2:
+            end_d=st.date_input('종료 날짜',today,min_value=today if planner else date(1900,1,1),max_value=date(2100,12,31) if planner else today,key='v98_end_'+mode)
+        include_empty=st.checkbox('일정이 없는 날짜도 인쇄',value=planner,key='v98_empty_'+mode)
+    else:
+        years=list(range(today.year,2101)) if planner else list(range(today.year,1899,-1))
+        year=st.selectbox('연도',years,key='v982_year_'+mode)
+        first=week_start(date(year,1,1)); last=week_start(date(year,12,31))
+        weeks=[first+timedelta(days=7*i) for i in range((last-first).days//7+1)]
+        weeks=[w for w in weeks if (w+timedelta(days=6)>=today if planner else w<=today)]
+        start_d=st.selectbox('주차',weeks,index=weeks.index(week_start(today)) if week_start(today) in weeks else 0,format_func=lambda w:f'{(w-first).days//7+1}주차 · {w:%m/%d} ~ {w+timedelta(days=6):%m/%d}',key='v982_week_'+mode+str(year))
+        end_d=start_d+timedelta(days=6); include_empty=True
+        st.caption('일요일~토요일 7일 고정 · 오늘이 포함된 주는 일기와 플래너 모두 선택 가능')
 
     if (end_d - start_d).days > 100:
         st.warning("⚠️ 기간이 100일을 넘으면 서버 메모리 부족이 발생할 수 있습니다.")
@@ -693,16 +729,6 @@ if service:
     if st.button(f"📅 캘린더 {mode} 불러오기", type="primary"):
         for key in ("pdf_data", "cached_diary", "preview_pdf", "preview_key", "full_pdf_key"):
             st.session_state[key] = None
-        raw_inputs = [x.strip() for x in manual.split(",") if x.strip()]
-        final_ids, custom_colors = [], {}
-        for item in raw_inputs:
-            if "|" in item:
-                cid, color_input = item.split("|", 1)
-                cid = cid.strip()
-                final_ids.append(cid)
-                custom_colors[cid] = normalize_color(color_input.strip())
-            else:
-                final_ids.append(item)
         if not final_ids:
             st.error("캘린더 ID를 입력해주세요!")
         elif start_d > end_d:
@@ -736,11 +762,13 @@ if service:
                 st.success(f"총 {total_count}개 기록을 불러왔습니다. 이제 여백을 조절해 보세요.")
 
     cached = st.session_state["cached_diary"]
-    if cached:
+    if cached and (cached["start"] != start_d or cached["end"] != end_d or cached["ids"] != final_ids or cached.get("manual") != manual):
+        st.info("날짜 또는 캘린더 선택이 변경되었습니다. 다시 불러오세요.")
+    if cached and cached["start"] == start_d and cached["end"] == end_d and cached["ids"] == final_ids and cached.get("manual") == manual:
         if cached["start"] != start_d or cached["end"] != end_d:
             st.warning("선택한 날짜가 불러온 일기의 기간과 다릅니다. 새 기간을 적용하려면 다시 불러오세요.")
         st.subheader("🔍 실시간 PDF 미리보기")
-        st.caption("선택한 하루 또는 한 주의 실제 PDF를 미리 봅니다. 주간은 일요일부터 토요일까지이며 선택 기간 밖은 제외됩니다.")
+        st.caption("선택한 하루 또는 한 주의 실제 PDF를 미리 봅니다. 주간은 일요일부터 토요일까지 한 페이지로 표시합니다.")
         print_data = {d: v for d, v in cached["data"].items() if include_empty or v["allday"] or v["timed"]}
         if not print_data:
             st.info("인쇄할 기록이 없습니다. 빈 날짜 인쇄를 선택하세요.")
@@ -789,7 +817,7 @@ if service:
                 try:
                     with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
                         page_count = len(doc)
-                        st.caption(f"선택 기간: {page_count}페이지" + (" (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (사건이 많으면 계속 페이지)"))
+                        st.caption(f"선택 기간: {page_count}페이지" + (" (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (한 주당 한 페이지)"))
                         if st.session_state["preview_page"] > page_count:
                             st.session_state["preview_page"] = page_count
                         previous, counter, following = st.columns([1, 2, 1])

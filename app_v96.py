@@ -1,4 +1,4 @@
-# V98.2 — 주간 가독성 및 생략 표시
+# V98.2.1 — 주간 가독성 및 생략 표시
 # V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
 # V96.3 — 캘린더 ID 자동 불러오기
 # V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
@@ -660,7 +660,7 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
         else:
             pages=[(f'{w:%Y.%m.%d} — {w+timedelta(days=6):%Y.%m.%d}',[[w+timedelta(days=i) for i in range(7)]]) for w in sorted({week_start(d) for d in daily_data})]
         for title, rows in pages:
-            height=157/len(rows)- (6 if monthly else 0)
+            height=(170 - 2.22*len(rows))/len(rows) if monthly else 157/len(rows)
             body='<table>'
             if monthly: body+='<tr>'+''.join('<th>'+h+'</th>' for h in days)+'</tr>'
             for row in rows:
@@ -675,7 +675,7 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
                 if not monthly: body+='<tr>'+''.join('<th>'+h+'</th>' for h in heads)+'</tr>'
                 body+='<tr>'+''.join(cells)+'</tr>'
             body+='</table>'
-            css=f"""@page {{size:A4 landscape;margin:12mm {side_margin_cm}cm;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;}} th {{background:#f1eee8;font-weight:normal;}} td {{height:{height}mm;}} .event {{margin-bottom:var(--gap);}}"""+style(8*font_scale,0)+'.event {margin-bottom:var(--gap);} .date-label {font-size:8pt;height:4mm;color:#555;} '
+            css=f"""@page {{size:A4 landscape;margin:{10 if monthly else 12}mm {side_margin_cm}cm;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;}} th {{background:#f1eee8;font-weight:normal;}} td {{height:{height}mm;}} .event {{margin-bottom:var(--gap);}}"""+style(8*font_scale,0)+'.event {margin-bottom:var(--gap);} .date-label {font-size:8pt;height:4mm;color:#555;} '
             pdf=HTML(string='<meta charset="utf-8"><body><h1>'+title+'</h1>'+body+'</body>').write_pdf(stylesheets=[CSS(string=css,font_config=fc)],font_config=fc)
             with fitz.open(stream=pdf,filetype='pdf') as doc:
                 if len(doc)!=1: raise RuntimeError('주간 양식을 한 페이지에 배치하지 못했습니다. 글자 크기 또는 여백을 줄여 주세요.')
@@ -862,7 +862,7 @@ if service:
             st.caption("상세 기록 또는 주간 사건 제목에 적용됩니다. 날짜 머리글은 고정됩니다.")
             setting_cols = st.columns(3)
             with setting_cols[0]:
-                side_margin_cm = st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
+                side_margin_cm = st.slider("본문 좌우 여백 (cm)", 0.8, 3.5, 1.0, 0.1, key="v9821_month_margin_"+mode) if layout.startswith("월간") else st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
             with setting_cols[1]:
                 column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05, disabled=layout!="일간")
             with setting_cols[2]:

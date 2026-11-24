@@ -140,7 +140,10 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
                 maxResults=2500, singleEvents=True, orderBy='startTime'
             ).execute()
             
-            items = events_result.get('items', [])
+            items = list(events_result.get('items', []))
+            while events_result.get('nextPageToken'):
+                events_result = service.events().list(calendarId=cal_id, timeMin=time_min, timeMax=time_max, maxResults=2500, singleEvents=True, orderBy='startTime', pageToken=events_result['nextPageToken']).execute()
+                items.extend(events_result.get('items', []))
             if items:
                 for event in items:
                     event['calendar_id'] = cal_id
@@ -308,10 +311,10 @@ def estimate_height(desc, is_title=False):
     line_height = 16 * FONT_SCALE
     return base + (lines * line_height) + 10 
 
-def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
+def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_empty=False):
     allday = data['allday']
     timed = data['timed']
-    if not allday and not timed: return ""
+    if not allday and not timed and not include_empty: return ""
     weekday_kr = ['월', '화', '수', '목', '금', '토', '일']
     date_str = f"{target_date.strftime('%Y-%m-%d')} ({weekday_kr[target_date.weekday()]})"
     
@@ -453,7 +456,7 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids):
     html += "</div>"
     return html
 
-def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4, column_gap_cm=0.85, entry_gap_px=17):
+def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4, column_gap_cm=0.85, entry_gap_px=17, include_empty=False):
     font_config = FontConfiguration()
     body_font = get_scaled_size(8.5)
     meta_font = get_scaled_size(7.5)
@@ -554,7 +557,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4
     
     full_html = "<html><body>"
     for d, events in sorted(daily_data.items()):
-        full_html += generate_day_html(d, events, cal_legend_info, ordered_ids)
+        full_html += generate_day_html(d, events, cal_legend_info, ordered_ids, include_empty)
     full_html += "</body></html>"
     
     return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css_style, font_config=font_config)], font_config=font_config)
@@ -569,6 +572,30 @@ for key, default in {
         st.session_state[key] = default
 
 st.title("📝 시온이네 일기장 인쇄소")
+today = datetime.now(KST).date()
+if "v98_mode" not in st.session_state:
+    st.session_state["v98_mode"] = None
+
+def choose_mode(mode):
+    if st.session_state["v98_mode"] != mode:
+        for key in ("pdf_data", "cached_diary", "preview_pdf", "preview_key", "full_pdf_key"):
+            st.session_state[key] = None
+        st.session_state["preview_page"] = 1
+        st.session_state["v98_mode"] = mode
+
+left, right = st.columns(2)
+with left:
+    st.button("📖 일기", use_container_width=True, on_click=choose_mode, args=("일기",))
+    st.caption("지나온 시간의 기록과 보존")
+with right:
+    st.button("📅 플래너", use_container_width=True, on_click=choose_mode, args=("플래너",))
+    st.caption("다가올 시간의 계획과 준비")
+mode = st.session_state["v98_mode"]
+if mode is None:
+    st.info("일기 또는 플래너를 선택하세요.")
+    st.stop()
+planner = mode == "플래너"
+st.header(mode + " · 일간 인쇄")
 service, robot_email = get_calendar_service()
 
 if service:
@@ -596,14 +623,17 @@ if service:
 
     col1, col2 = st.columns(2)
     with col1:
-        start_d = st.date_input("시작 날짜", date.today())
+        start_d = st.date_input("시작 날짜", today, min_value=today if planner else date(1900,1,1), max_value=date(2100,12,31) if planner else today, key="v98_start_"+mode)
     with col2:
-        end_d = st.date_input("종료 날짜", date.today())
+        end_d = st.date_input("종료 날짜", today, min_value=today if planner else date(1900,1,1), max_value=date(2100,12,31) if planner else today, key="v98_end_"+mode)
+    include_empty = st.checkbox("일정이 없는 날짜도 인쇄", value=planner, key="v98_empty_"+mode)
 
     if (end_d - start_d).days > 100:
         st.warning("⚠️ 기간이 100일을 넘으면 서버 메모리 부족이 발생할 수 있습니다.")
 
-    if st.button("📅 캘린더 일기 불러오기", type="primary"):
+    if st.button(f"📅 캘린더 {mode} 불러오기", type="primary"):
+        for key in ("pdf_data", "cached_diary", "preview_pdf", "preview_key", "full_pdf_key"):
+            st.session_state[key] = None
         raw_inputs = [x.strip() for x in manual.split(",") if x.strip()]
         final_ids, custom_colors = [], {}
         for item in raw_inputs:
@@ -629,8 +659,10 @@ if service:
                     if "❌" in log: st.error(log)
                     elif "⚠️" in log: st.warning(log)
                     else: st.success(log)
-            if total_count == 0:
-                st.warning("가져온 일기가 없습니다.")
+            if any("❌" in log for log in logs):
+                st.error("일부 캘린더를 조회하지 못했습니다. 공유 설정을 확인하고 다시 불러오세요.")
+            elif total_count == 0 and not include_empty:
+                st.warning("가져온 기록이 없습니다. 빈 날짜 인쇄를 선택할 수 있습니다.")
             else:
                 st.session_state["cached_diary"] = {
                     "data": daily_data, "legend": cal_legend_info,
@@ -650,7 +682,11 @@ if service:
             st.warning("선택한 날짜가 불러온 일기의 기간과 다릅니다. 새 기간을 적용하려면 다시 불러오세요.")
         st.subheader("🔍 실시간 PDF 미리보기")
         st.caption("전체 일기책 대신 **선택한 하루만** PDF로 렌더링하여 빠르게 확인합니다. 실제 출력 엔진과 동일한 방식입니다.")
-        day_keys = sorted(cached["data"].keys())
+        print_data = {d: v for d, v in cached["data"].items() if include_empty or v["allday"] or v["timed"]}
+        if not print_data:
+            st.info("인쇄할 기록이 없습니다. 빈 날짜 인쇄를 선택하세요.")
+            st.stop()
+        day_keys = sorted(print_data.keys())
         selected_day = st.selectbox(
             "미리 볼 날짜", day_keys,
             format_func=lambda x: str(x),
@@ -668,7 +704,7 @@ if service:
         current_key = (
             str(selected_day), round(side_margin_cm, 2),
             round(column_gap_cm, 2), entry_gap_px, FONT_SCALE,
-            id(cached["data"]),
+            id(cached["data"]), include_empty,
         )
         if st.session_state["preview_key"] != current_key:
             with st.spinner("변경된 여백으로 미리보기를 갱신하는 중..."):
@@ -676,7 +712,7 @@ if service:
                     st.session_state["preview_pdf"] = create_full_pdf(
                         {selected_day: cached["data"][selected_day]},
                         cached["legend"], cached["ids"],
-                        side_margin_cm, column_gap_cm, entry_gap_px,
+                        side_margin_cm, column_gap_cm, entry_gap_px, include_empty,
                     )
                     old_key = st.session_state["preview_key"]
                     if old_key is None or old_key[0] != current_key[0]:
@@ -710,16 +746,16 @@ if service:
                 st.error(f"PDF 표시 오류: {type(exc).__name__}: {exc}")
 
         st.divider()
-        st.subheader("📚 전체 일기책 출력")
+        st.subheader(f"📚 전체 {mode} 출력")
         st.caption("레이아웃이 마음에 들면 전체 PDF를 생성하세요. 전체 파일은 여백 설정을 바꾼 뒤 다시 생성해야 합니다.")
         full_key = (round(side_margin_cm, 2), round(column_gap_cm, 2), entry_gap_px,
-                    FONT_SCALE, id(cached["data"]))
-        if st.button("🚀 전체 일기책 PDF 만들기"):
+                    FONT_SCALE, id(cached["data"]), include_empty)
+        if st.button(f"🚀 전체 {mode} PDF 만들기"):
             with st.spinner("전체 날짜의 PDF를 생성하는 중입니다..."):
                 try:
                     st.session_state["pdf_data"] = create_full_pdf(
-                        cached["data"], cached["legend"], cached["ids"],
-                        side_margin_cm, column_gap_cm, entry_gap_px,
+                        print_data, cached["legend"], cached["ids"],
+                        side_margin_cm, column_gap_cm, entry_gap_px, include_empty,
                     )
                     st.session_state["full_pdf_key"] = full_key
                     st.success("전체 PDF 생성 완료!")
@@ -730,7 +766,7 @@ if service:
                 st.warning("⚠️ 설정이 변경되었습니다. 아래 다운로드 파일은 이전 설정으로 만들어졌습니다. 전체 PDF를 다시 생성하세요.")
             st.download_button(
                 "📥 전체 PDF 다운로드", st.session_state["pdf_data"],
-                file_name="MyDiary.pdf",
+                file_name="Planner.pdf" if planner else "MyDiary.pdf",
             )
 else:
     st.error("인증 정보를 불러오지 못했습니다.")
@@ -795,7 +831,7 @@ def merge_photo_pdf(diary, photos):
         return a.tobytes(garbage=3, deflate=True)
 
 st.divider()
-st.header('📷 사진 기록 부록 · V97')
+st.header('📷 사진 기록 부록')
 st.caption('일기와 독립적으로 사진을 정리할 수 있습니다. 사진은 현재 세션에서만 처리하며 클라우드 서버로 전송됩니다. 민감한 사진은 비공개 앱에서만 사용하세요.')
 files = st.file_uploader('사진을 여기에 끌어다 놓으세요', type=['jpg','jpeg','png','heic','heif','webp'], accept_multiple_files=True, key='v97_upload')
 if 'v97_photo_cache' not in st.session_state:
@@ -851,11 +887,11 @@ if active:
         diary = st.session_state.get('pdf_data')
         if diary:
             st.caption('결합 파일은 마지막으로 생성한 전체 일기 PDF 뒤에 사진을 붙입니다. 일기 설정을 바꿨다면 전체 PDF부터 다시 생성하세요. 사진 날짜 범위는 자동 제한하지 않습니다.')
-            if st.button('일기 + 사진 결합 PDF 만들기',key='photo_merge'):
+            if st.button(f'{mode} + 사진 결합 PDF 만들기',key='photo_merge'):
                 st.session_state['v97_combined'] = merge_photo_pdf(diary,photo_bytes)
                 st.session_state['v97_combined_sig'] = (hashlib.sha256(diary).digest(),hashlib.sha256(photo_bytes).digest())
             if st.session_state.get('v97_combined_sig') == (hashlib.sha256(diary).digest(),hashlib.sha256(photo_bytes).digest()):
-                st.download_button('일기 + 사진 PDF 다운로드',st.session_state['v97_combined'],file_name='DiaryWithPhotos.pdf',key='photo_combined_download')
+                st.download_button(f'{mode} + 사진 PDF 다운로드',st.session_state['v97_combined'],file_name='DiaryWithPhotos.pdf',key='photo_combined_download')
     elif photo_bytes:
         st.info('사진 설정이 변경되었습니다. 미리보기 버튼을 다시 눌러주세요.')
 else:

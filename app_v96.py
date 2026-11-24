@@ -1,4 +1,4 @@
-# V98.0.4 — 상세 기록 글자 크기 조절
+# V98.1 — 주간 인쇄 (그리드 / 목록)
 # V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
 # V96.3 — 캘린더 ID 자동 불러오기
 # V96.2의 PDF/2단 편집 로직은 그대로 유지하고, 사이드바 기본 입력값만 변경했습니다.
@@ -565,6 +565,64 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4
     
     return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css_style, font_config=font_config)], font_config=font_config)
 
+
+def week_start(d):
+    return d - timedelta(days=(d.weekday()+1)%7)
+
+def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, entry_gap_px, include_empty, font_scale, layout):
+    from html import escape
+    import re
+    weeks = sorted({week_start(d) for d in daily_data})
+    pages = []
+    days = ['일','월','화','수','목','금','토']
+    for w in weeks:
+        items = []
+        for i in range(7):
+            d = w + timedelta(days=i)
+            data = daily_data.get(d)
+            entries = []
+            if data:
+                for e in data['allday'] + data['timed']:
+                    color = str(e.get('real_color','#555555'))
+                    if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?',color): color = '#555555'
+                    stamp = '종일' if 'date' in e.get('start',{}) else max(e['dt_object'],datetime.combine(d,datetime.min.time()).replace(tzinfo=KST)).strftime('%H:%M')
+                    title = escape(str(e.get('summary') or '(제목 없음)'))
+                    entries.append(f'<div class="event" style="border-left-color:{color}"><span class="time">{stamp}</span> <span style="color:{color}">{title}</span></div>')
+            items.append((d, entries, data is not None))
+        # Bound each page by measured text layout: render, then reduce the number of entries per day if necessary.
+        # A continuation page retains the same seven day headings; no titles are discarded.
+        offsets = [0]*7
+        first = True
+        while first or any(offsets[i]<len(items[i][1]) for i in range(7)):
+            first = False
+            limit = 12 if layout=='주간 그리드형' else 4
+            while True:
+                cells=[]
+                for i,(d,entries,active) in enumerate(items):
+                    head=f'<div class="day d{i}">{d.month}/{d.day} ({days[i]})</div>'
+                    content=''.join(entries[offsets[i]:offsets[i]+limit]) if active else '<span class="muted">선택 범위 밖 / 제외</span>'
+                    cells.append((head,content))
+                if layout=='주간 그리드형':
+                    body='<table class="grid"><tr>'+''.join('<th>'+h+'</th>' for h,c in cells)+'</tr><tr>'+''.join('<td>'+c+'</td>' for h,c in cells)+'</tr></table>'
+                else:
+                    body='<table class="list">'+''.join('<tr><th>'+h+'</th><td>'+c+'</td></tr>' for h,c in cells)+'</table>'
+                title=f'{w:%Y.%m.%d} — {w+timedelta(days=6):%Y.%m.%d}' + (' (계속)' if any(offsets) else '')
+                css=f"""@page {{size:A4 landscape;margin:15mm {side_margin_cm}cm;}} body {{font-family:NanumGothic,sans-serif;font-size:{9*font_scale}pt;color:#332c28;margin:0;}} h1 {{font-size:16pt;border-bottom:1.5pt solid #63473c;padding-bottom:3mm;margin:0 0 4mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:0.6pt solid #bdb6ad;vertical-align:top;padding:2mm;overflow-wrap:anywhere;}} th {{background:#f1eee8;font-weight:normal;}} .grid td {{height:145mm;}} .list th {{width:22mm;}} .list td {{height:17mm;}} .event {{border-left:2pt solid #777;padding-left:1mm;margin-bottom:{max(1,entry_gap_px/8):g}mm;overflow-wrap:anywhere;}} .time,.muted {{font-size:{7*font_scale}pt;color:#666;}} .d0 {{color:#a34c44;}} .d6 {{color:#42658b;}}"""
+                pdf=HTML(string='<html><meta charset="utf-8"><body><h1>'+title+'</h1>'+body+'</body></html>').write_pdf(stylesheets=[CSS(string=css)])
+                with fitz.open(stream=pdf,filetype='pdf') as doc: count=len(doc)
+                if count==1 or limit==1: break
+                limit=max(1,limit//2)
+            pages.append(pdf)
+            offsets=[min(len(items[i][1]),offsets[i]+limit) for i in range(7)]
+    with fitz.open() as out:
+        for pdf in pages:
+            with fitz.open(stream=pdf,filetype='pdf') as doc: out.insert_pdf(doc)
+        return out.tobytes(garbage=3,deflate=True)
+
+def render_body(*args):
+    *base, layout = args
+    return create_full_pdf(*base) if layout=='일간' else create_weekly_pdf(*base,layout)
+
 # --- [6. Main UI] ---
 # Google Calendar is fetched once; print-layout changes reuse the downloaded events.
 for key, default in {
@@ -598,7 +656,8 @@ if mode is None:
     st.info("일기 또는 플래너를 선택하세요.")
     st.stop()
 planner = mode == "플래너"
-st.header(mode + " · 일간 인쇄")
+st.header(mode + " · 인쇄")
+layout = st.radio("인쇄 양식", ["일간", "주간 그리드형", "주간 목록형"], horizontal=True, key="v981_layout_"+mode)
 service, robot_email = get_calendar_service()
 
 body_ready = False
@@ -681,44 +740,44 @@ if service:
         if cached["start"] != start_d or cached["end"] != end_d:
             st.warning("선택한 날짜가 불러온 일기의 기간과 다릅니다. 새 기간을 적용하려면 다시 불러오세요.")
         st.subheader("🔍 실시간 PDF 미리보기")
-        st.caption("전체 일기책 대신 **선택한 하루만** PDF로 렌더링하여 빠르게 확인합니다. 실제 출력 엔진과 동일한 방식입니다.")
+        st.caption("선택한 하루 또는 한 주의 실제 PDF를 미리 봅니다. 주간은 일요일부터 토요일까지이며 선택 기간 밖은 제외됩니다.")
         print_data = {d: v for d, v in cached["data"].items() if include_empty or v["allday"] or v["timed"]}
         if not print_data:
             st.info("인쇄할 기록이 없습니다. 빈 날짜 인쇄를 선택하세요.")
         else:
-            day_keys = sorted(print_data.keys())
+            day_keys = sorted(print_data.keys()) if layout=="일간" else sorted({week_start(d) for d in print_data})
             selected_day = st.selectbox(
-                "미리 볼 날짜", day_keys,
-                format_func=lambda x: str(x),
+                "미리 볼 날짜" if layout=="일간" else "미리 볼 주", day_keys,
+                format_func=lambda x: str(x) if layout=="일간" else f"{x} ~ {x+timedelta(days=6)}", key="v981_preview_"+mode+layout,
             )
             st.subheader("📐 인쇄 레이아웃")
             st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
             font_option = st.radio("본문 글자 크기", ["작게", "보통", "크게"], index=1, horizontal=True, key="v984_font_"+mode)
             FONT_SCALE = {"작게": 0.85, "보통": 1.0, "크게": 1.2}[font_option]
-            st.caption("상세 기록의 제목·시간·본문에 적용됩니다. 시간표와 날짜 머리글은 고정됩니다.")
+            st.caption("상세 기록 또는 주간 사건 제목과 시간에 적용됩니다. 날짜 머리글은 고정됩니다.")
             setting_cols = st.columns(3)
             with setting_cols[0]:
                 side_margin_cm = st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
             with setting_cols[1]:
-                column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05)
+                column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05, disabled=layout!="일간")
             with setting_cols[2]:
                 entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
-            st.caption("시간표와 날짜 머리글은 고정하고 2단 본문만 조절합니다. V96.3 기본값: 2.4cm / 0.85cm / 17px")
+            st.caption("일간은 2단 본문만 조절합니다. 주간은 용지 좌우 여백과 사건 간격을 조절합니다.")
             current_key = (
                 str(selected_day), round(side_margin_cm, 2),
                 round(column_gap_cm, 2), entry_gap_px, FONT_SCALE,
-                id(cached["data"]), include_empty,
+                id(cached["data"]), include_empty, layout,
             )
             if st.session_state["preview_key"] != current_key:
                 with st.spinner("변경된 설정으로 미리보기를 갱신하는 중..."):
                     try:
-                        st.session_state["preview_pdf"] = create_full_pdf(
-                            {selected_day: cached["data"][selected_day]},
+                        st.session_state["preview_pdf"] = render_body(
+                            {selected_day: cached["data"][selected_day]} if layout=="일간" else {d:v for d,v in print_data.items() if week_start(d)==selected_day},
                             cached["legend"], cached["ids"],
-                            side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE,
+                            side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE, layout,
                         )
                         old_key = st.session_state["preview_key"]
-                        if old_key is None or old_key[0] != current_key[0]:
+                        if old_key is None or old_key[0] != current_key[0] or old_key[-1] != layout:
                             st.session_state["preview_page"] = 1
                         st.session_state["preview_key"] = current_key
                     except Exception as exc:
@@ -730,7 +789,7 @@ if service:
                 try:
                     with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
                         page_count = len(doc)
-                        st.caption(f"선택 날짜: {page_count}페이지 (첫 페이지는 시간표, 이후는 본문)")
+                        st.caption(f"선택 기간: {page_count}페이지" + (" (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (사건이 많으면 계속 페이지)"))
                         if st.session_state["preview_page"] > page_count:
                             st.session_state["preview_page"] = page_count
                         previous, counter, following = st.columns([1, 2, 1])
@@ -748,8 +807,8 @@ if service:
                 except Exception as exc:
                     st.error(f"PDF 표시 오류: {type(exc).__name__}: {exc}")
 
-            body_args = (print_data, cached["legend"], cached["ids"], side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE)
-            body_key = (mode, id(cached["data"]), side_margin_cm, column_gap_cm, entry_gap_px, FONT_SCALE, include_empty)
+            body_args = (print_data, cached["legend"], cached["ids"], side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE, layout)
+            body_key = (mode, id(cached["data"]), side_margin_cm, column_gap_cm, entry_gap_px, FONT_SCALE, include_empty, layout)
             body_ready = cached["start"] == start_d and cached["end"] == end_d and cached.get("manual", manual) == manual
 
 else:
@@ -915,11 +974,11 @@ for kind, label, ready, sig, filename in export_options:
         try:
             with st.spinner('최신 설정으로 PDF를 생성하는 중입니다...'):
                 if kind == 'body':
-                    result = create_full_pdf(*body_args)
+                    result = render_body(*body_args)
                 elif kind == 'photos':
                     result = photo_pdf(records, cols)
                 else:
-                    result = merge_photo_pdf(create_full_pdf(*body_args), photo_pdf(records, cols))
+                    result = merge_photo_pdf(render_body(*body_args), photo_pdf(records, cols))
                 exports[kind] = (sig, result)
             st.success('PDF 생성 완료!')
         except Exception as e:

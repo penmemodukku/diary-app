@@ -1,4 +1,4 @@
-# V98.3.3 — 우측 종일 기록 및 미리보기 개선
+# V98.3.4 — 인쇄 날짜 기준 시간 표기 개선
 # V98.3.2 — 일간 종일 일정 및 미리보기 개선
 # V98.3.1 — 종일 기간 일정 개선
 # V98.3 — 연간 하이라이트 및 월간 한 장 고정
@@ -276,13 +276,21 @@ def calculate_visual_layout(events):
                 final_items.append(evt)
     return final_items
 
-def get_time_info(event):
+def get_time_info(event, target_date):
     start_dt = event['dt_object']
     end_dt = event['dt_end_object']
-    
-    # 단순 표기용 텍스트 (원본 시간 그대로 표시)
-    time_range = f"{start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')}"
-    
+
+    def format_endpoint(dt):
+        offset = (dt.date() - target_date).days
+        if offset == 0:
+            return f"{dt:%H:%M}"
+        if offset == -1:
+            return f"전날 {dt:%H:%M}"
+        if offset == 1:
+            return f"익일 {dt:%H:%M}"
+        return f"{dt:%m/%d %H:%M}" if dt.year == target_date.year else f"{dt:%Y/%m/%d %H:%M}"
+
+    time_range = f"{format_endpoint(start_dt)} - {format_endpoint(end_dt)}"
     duration = end_dt - start_dt
     total_seconds = int(duration.total_seconds())
     h, r = divmod(total_seconds, 3600)
@@ -291,13 +299,6 @@ def get_time_info(event):
     if h > 0: dur_str.append(f"{h}h")
     if m > 0: dur_str.append(f"{m}m")
     if not dur_str: dur_str.append("0m")
-    
-    # 날짜가 다르면 표시 (예: +1)
-    if start_dt.date() != end_dt.date():
-        days_diff = (end_dt.date() - start_dt.date()).days
-        if days_diff > 0:
-             time_range = f"{start_dt:%H:%M} - " + (f"익일 {end_dt:%H:%M}" if days_diff == 1 else f"{end_dt:%m/%d %H:%M}" if start_dt.year == end_dt.year else f"{end_dt:%Y/%m/%d %H:%M}")
-             
     return time_range, " ".join(dur_str)
 
 # --- [5. PDF 생성] ---
@@ -504,7 +505,7 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_e
                 title_html = f"<span class='text-title' style='color:{real_color};'>[종일] {evt.get('summary','')}{period}</span>"
                 html += f"""<div class='text-item'><div class='allday-styled' style='border-color:{real_color};'>{title_html}<div class='text-desc'>{clean_desc}</div></div></div>"""
             else:
-                t_range, dur_str = get_time_info(evt)
+                t_range, dur_str = get_time_info(evt, target_date)
                 meta_html = f"<span class='text-meta'><span style='color:{real_color}; font-weight:800; margin-right:5px;'>[{evt.get('calendar_name','')}]</span>{t_range} ({dur_str})</span>"
                 title_html = f"<span class='text-title' style='color:{real_color};'>{evt.get('summary','')}</span>"
                 html += f"""<div class='text-item'>{meta_html}{title_html}<div class='text-desc'>{clean_desc}</div></div>"""

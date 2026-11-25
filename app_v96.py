@@ -1,3 +1,5 @@
+# V98.3.3 — 우측 종일 기록 및 미리보기 개선
+# V98.3.2 — 일간 종일 일정 및 미리보기 개선
 # V98.3.1 — 종일 기간 일정 개선
 # V98.3 — 연간 하이라이트 및 월간 한 장 고정
 # V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
@@ -294,7 +296,7 @@ def get_time_info(event):
     if start_dt.date() != end_dt.date():
         days_diff = (end_dt.date() - start_dt.date()).days
         if days_diff > 0:
-             time_range += f" (+{days_diff})"
+             time_range = f"{start_dt:%H:%M} - " + (f"익일 {end_dt:%H:%M}" if days_diff == 1 else f"{end_dt:%m/%d %H:%M}" if start_dt.year == end_dt.year else f"{end_dt:%Y/%m/%d %H:%M}")
              
     return time_range, " ".join(dur_str)
 
@@ -326,14 +328,51 @@ def span_label(a,b):
 def span_key(e):
     return (e.get('calendar_id'),e.get('id') or id(e))
 
-def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_empty=False):
+DAILY_SIDEBAR_CSS = """
+.daily-all { margin-top:15px; }
+.daily-all-label { font-size:8pt; font-weight:bold; color:#666; margin-bottom:6px; }
+.daily-all-row { font-size:8pt; line-height:1.35; margin-bottom:4px; padding-left:4px; border-left:2px solid; overflow-wrap:anywhere; word-break:break-all; }
+.daily-all-period { font-size:7pt; color:#777; }
+.daily-all-omitted { font-size:7pt; color:#777; border-top:1px solid #ddd; padding-top:3px; }
+"""
+
+def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_empty=False, planner=False):
     allday = data['allday']
     timed = data['timed']
     if not allday and not timed and not include_empty: return ""
     weekday_kr = ['월', '화', '수', '목', '금', '토', '일']
     date_str = f"{target_date.strftime('%Y-%m-%d')} ({weekday_kr[target_date.weekday()]})"
     
-    COL_HEIGHT = 950 
+    from html import escape
+    # Measure sidebar entries using the same font and physical width as the PDF.
+    all_html = ""
+    if allday:
+        import re
+        label = "종일 / 기간 일정" if planner else "종일 / 기간 일기"
+        rows = []
+        for evt in allday:
+            span = allday_span(evt)
+            period = f"{span_label(*span)} · {(target_date-span[0]).days+1}/{(span[1]-span[0]).days+1}일차" if span else ""
+            color = str(evt.get('real_color', '#777'))
+            if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?', color): color = '#777'
+            rows.append(f"<div class='daily-all-row' style='border-color:{color};color:{color}'>{escape(str(evt.get('summary') or '(제목 없음)'))}" + (f"<div class='daily-all-period'>{escape(period)}</div>" if period else '') + '</div>')
+        heading = f"<div class='daily-all-label'>{label}</div>"
+        fc = FontConfiguration()
+        def sidebar(n):
+            extra = len(rows)-n
+            return heading + ''.join(rows[:n]) + (f"<div class='daily-all-omitted'>생략 건수 {extra}건<br>상세 기록 참조</div>" if extra else '')
+        def fits(n):
+            doc = HTML(string='<meta charset="utf-8"><div class="measure">'+sidebar(n)+'</div>').render(stylesheets=[CSS(string='@page {size: 40.42mm 1000mm; margin:0} body {margin:0;font-family:NanumGothic,sans-serif;line-height:1.35} '+DAILY_SIDEBAR_CSS,font_config=fc)],font_config=fc)
+            if len(doc.pages)!=1: return False
+            box = next(x for x in doc.pages[0]._page_box.descendants() if getattr(x,'element_tag',None)=='div' and x.element.get('class')=='measure')
+            return box.height <= 930
+        lo, hi = 0, len(rows)
+        while lo < hi:
+            mid = (lo+hi+1)//2
+            if fits(mid): lo=mid
+            else: hi=mid-1
+        all_html = "<div class='daily-all'>"+sidebar(lo)+"</div>"
+    COL_HEIGHT = 950
     PIXELS_PER_MIN = COL_HEIGHT / 1440
     TOP_OFFSET = 10
     
@@ -402,7 +441,7 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_e
             <div class='content-wrapper'>
                 <div class='text-column'> 
                     <div class='visual-page'>
-                        <div class='timeline-col'>
+                        <div class='timeline-col' style='top:10px;height:{COL_HEIGHT}px'>
     """
     
     for h in range(25):
@@ -436,11 +475,11 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_e
         
         html += f"<div class='event-block' style='top:{top_px}px; height:{item['_dur']*PIXELS_PER_MIN}px; left:{l_pct}%; width:{w_pct}%; background-color:{item['bg']}40; border-left:3px solid {item['bg']}; color:#333; font-size:{font_size}; line-height:{line_height}; z-index:20; {wrap_style}'><b>{item['summary']}</b></div>"
     
-    html += """
+    html += f"""
                         </div>
                     </div> 
                 </div> 
-                <div class='memo-column'></div>
+                <div class='memo-column'>{all_html}</div>
             </div>
         </div> 
     """
@@ -473,7 +512,7 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_e
     html += "</div>"
     return html
 
-def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4, column_gap_cm=0.85, entry_gap_px=17, include_empty=False, font_scale=1.0):
+def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4, column_gap_cm=0.85, entry_gap_px=17, include_empty=False, font_scale=1.0, planner=False):
     font_config = FontConfiguration()
     body_font = f"{8.5 * font_scale:g}pt"
     meta_font = f"{7.5 * font_scale:g}pt"
@@ -515,6 +554,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4
         .visual-page {{ width: 100%; height: 970px; position: relative; overflow: visible; margin-top: 5px; margin-bottom: 10px; }}
         .timeline-col {{ position: absolute; top: 10px; height: 950px; width: 100%; box-sizing: border-box; }}
         
+        {DAILY_SIDEBAR_CSS}
         .grid-line {{ position: absolute; left: 0; width: 100%; height: 0; border-top: 1px dashed #bbb; z-index: 0; }}
         
         .time-label {{ position: absolute; left: 0; font-size: 7pt; font-weight: bold; color: #666; background-color: transparent; padding-right: 5px; z-index: 10; width: 30px; text-align: left; }}
@@ -576,7 +616,7 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4
     
     full_html = "<html><body>"
     for d, events in sorted(daily_data.items()):
-        full_html += generate_day_html(d, events, cal_legend_info, ordered_ids, include_empty)
+        full_html += generate_day_html(d, events, cal_legend_info, ordered_ids, include_empty, planner)
     full_html += "</body></html>"
     
     return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css_style, font_config=font_config)], font_config=font_config)
@@ -819,9 +859,9 @@ def create_annual_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
                 out.insert_pdf(doc)
         return out.tobytes(garbage=3,deflate=True)
 
-def render_body(*args):
+def render_body(*args, planner=False):
     *base, layout = args
-    return create_full_pdf(*base) if layout=='일간' else create_annual_pdf(*base,layout) if layout.startswith('연간') else create_weekly_pdf(*base,layout)
+    return create_full_pdf(*base, planner=planner) if layout=='일간' else create_annual_pdf(*base,layout) if layout.startswith('연간') else create_weekly_pdf(*base,layout)
 
 # --- [6. Main UI] ---
 # Google Calendar is fetched once; print-layout changes reuse the downloaded events.
@@ -988,17 +1028,13 @@ if service:
     if cached and cached["start"] == start_d and cached["end"] == end_d and cached["ids"] == final_ids and cached.get("manual") == manual:
         if cached["start"] != start_d or cached["end"] != end_d:
             st.warning("선택한 날짜가 불러온 일기의 기간과 다릅니다. 새 기간을 적용하려면 다시 불러오세요.")
-        st.subheader("🔍 실시간 PDF 미리보기")
+        st.subheader("인쇄 설정")
         st.caption("선택한 하루 또는 한 주의 실제 PDF를 미리 봅니다. 주간·월간은 한 페이지, 연간은 한 장 또는 두 장으로 표시합니다.")
         print_data = {d: v for d, v in cached["data"].items() if include_empty or v["allday"] or v["timed"]}
         if not print_data:
             st.info("인쇄할 기록이 없습니다. 빈 날짜 인쇄를 선택하세요.")
         else:
             day_keys = [start_d] if layout.startswith(("월간","연간")) else sorted(print_data.keys()) if layout=="일간" else sorted({week_start(d) for d in print_data})
-            selected_day = st.selectbox(
-                "미리 볼 연도" if layout.startswith("연간") else "미리 볼 월" if layout.startswith("월간") else "미리 볼 날짜" if layout=="일간" else "미리 볼 주", day_keys,
-                format_func=lambda x: f"{x.year}년" if layout.startswith("연간") else f"{x.year}년 {x.month}월" if layout.startswith(("월간","연간")) else str(x) if layout=="일간" else f"{x} ~ {x+timedelta(days=6)}", key="v981_preview_"+mode+layout,
-            )
             st.subheader("📐 인쇄 레이아웃")
             st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
             font_option = st.radio("본문 글자 크기", ["작게", "보통", "크게"], index=1, horizontal=True, key="v984_font_"+mode)
@@ -1012,10 +1048,31 @@ if service:
             with setting_cols[2]:
                 entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
             st.caption("일간은 2단 본문만 조절합니다. 주간·월간은 용지 좌우 여백과 사건 간격을 조절합니다.")
+            st.subheader("🔍 PDF 미리보기")
+            date_key = "v981_preview_"+mode+layout
+            if st.session_state.get(date_key) not in day_keys:
+                st.session_state[date_key] = day_keys[0]
+            def shift_preview_day(delta):
+                idx = day_keys.index(st.session_state[date_key])
+                st.session_state[date_key] = day_keys[max(0,min(len(day_keys)-1,idx+delta))]
+                st.session_state["preview_page"] = 1
+            if layout == "일간":
+                left, middle, right = st.columns([1,3,1])
+                with left:
+                    st.button("◀ 전날", disabled=st.session_state[date_key]==day_keys[0], on_click=shift_preview_day,args=(-1,))
+                with right:
+                    st.button("다음 날 ▶", disabled=st.session_state[date_key]==day_keys[-1], on_click=shift_preview_day,args=(1,))
+            else:
+                middle = st.container()
+            with middle:
+                selected_day = st.selectbox(
+                    "미리 볼 연도" if layout.startswith("연간") else "미리 볼 월" if layout.startswith("월간") else "미리 볼 날짜" if layout=="일간" else "미리 볼 주", day_keys,
+                    format_func=lambda x: f"{x.year}년" if layout.startswith("연간") else f"{x.year}년 {x.month}월" if layout.startswith(("월간","연간")) else str(x) if layout=="일간" else f"{x} ~ {x+timedelta(days=6)}", key="v981_preview_"+mode+layout,
+                )
             current_key = (
                 str(selected_day), round(side_margin_cm, 2),
                 round(column_gap_cm, 2), entry_gap_px, FONT_SCALE,
-                id(cached["data"]), include_empty, layout,
+                id(cached["data"]), include_empty, mode, layout,
             )
             if st.session_state["preview_key"] != current_key:
                 with st.spinner("변경된 설정으로 미리보기를 갱신하는 중..."):
@@ -1023,7 +1080,7 @@ if service:
                         st.session_state["preview_pdf"] = render_body(
                             print_data if layout.startswith(("월간","연간")) else {selected_day: cached["data"][selected_day]} if layout=="일간" else {d:v for d,v in print_data.items() if week_start(d)==selected_day},
                             cached["legend"], cached["ids"],
-                            side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE, layout,
+                            side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE, layout, planner=planner,
                         )
                         old_key = st.session_state["preview_key"]
                         if old_key is None or old_key[0] != current_key[0] or old_key[-1] != layout:
@@ -1042,12 +1099,12 @@ if service:
                         if st.session_state["preview_page"] > page_count:
                             st.session_state["preview_page"] = page_count
                         previous, counter, following = st.columns([1, 2, 1])
+                        def shift_page(delta, count):
+                            st.session_state["preview_page"] = max(1,min(count,st.session_state["preview_page"]+delta))
                         with previous:
-                            if st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1):
-                                st.session_state["preview_page"] -= 1
+                            st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1, on_click=shift_page,args=(-1,page_count))
                         with following:
-                            if st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count):
-                                st.session_state["preview_page"] += 1
+                            st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count, on_click=shift_page,args=(1,page_count))
                         with counter:
                             st.markdown(f"**{st.session_state['preview_page']} / {page_count} 페이지**")
                         page = doc.load_page(st.session_state["preview_page"] - 1)
@@ -1223,11 +1280,11 @@ for kind, label, ready, sig, filename in export_options:
         try:
             with st.spinner('최신 설정으로 PDF를 생성하는 중입니다...'):
                 if kind == 'body':
-                    result = render_body(*body_args)
+                    result = render_body(*body_args, planner=planner)
                 elif kind == 'photos':
                     result = photo_pdf(records, cols)
                 else:
-                    result = merge_photo_pdf(render_body(*body_args), photo_pdf(records, cols))
+                    result = merge_photo_pdf(render_body(*body_args, planner=planner), photo_pdf(records, cols))
                 exports[kind] = (sig, result)
             st.success('PDF 생성 완료!')
         except Exception as e:

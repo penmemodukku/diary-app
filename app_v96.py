@@ -1,3 +1,4 @@
+# V98.3.1 — 종일 기간 일정 개선
 # V98.3 — 연간 하이라이트 및 월간 한 장 고정
 # V96.4.1 — 밝은 테마 고정 + 눈에 띄는 여백 조절 + 페이지 탐색 개선
 # V96.3 — 캘린더 ID 자동 불러오기
@@ -312,6 +313,19 @@ def estimate_height(desc, is_title=False):
     line_height = 16 * FONT_SCALE
     return base + (lines * line_height) + 10 
 
+def allday_span(e):
+    try:
+        a=date.fromisoformat(e['start']['date']); b=date.fromisoformat(e['end']['date'])-timedelta(days=1)
+        return (a,b) if b>a else None
+    except (KeyError, ValueError, TypeError): return None
+
+def span_label(a,b):
+    if a.year!=b.year: return f'{a:%Y/%m/%d}~{b:%Y/%m/%d}'
+    return f'{a:%m/%d}~{b:%m/%d}'
+
+def span_key(e):
+    return (e.get('calendar_id'),e.get('id') or id(e))
+
 def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_empty=False):
     allday = data['allday']
     timed = data['timed']
@@ -446,7 +460,9 @@ def generate_day_html(target_date, data, cal_legend_info, ordered_ids, include_e
             clean_desc = force_break_text(raw_desc).replace('\\n', '<br>')
             real_color = evt.get('real_color', '#333')
             if evt.get('is_allday'):
-                title_html = f"<span class='text-title' style='color:{real_color};'>[종일] {evt.get('summary','')}</span>"
+                span=allday_span(evt)
+                period=f' ({span_label(*span)} · {(target_date-span[0]).days+1}/{(span[1]-span[0]).days+1}일차)' if span else ''
+                title_html = f"<span class='text-title' style='color:{real_color};'>[종일] {evt.get('summary','')}{period}</span>"
                 html += f"""<div class='text-item'><div class='allday-styled' style='border-color:{real_color};'>{title_html}<div class='text-desc'>{clean_desc}</div></div></div>"""
             else:
                 t_range, dur_str = get_time_info(evt)
@@ -584,13 +600,13 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
         return f'<div class="event" style="border-left-color:{color};color:{color}">{escape(title)}</div>'
     def style(size, gap):
         return f"""body {{margin:0;font-family:NanumGothic,sans-serif;font-size:{size}pt;line-height:1.22;color:#332c28;}} .event {{border-left:1.2pt solid;padding-left:.7mm;margin-bottom:{gap}mm;overflow-wrap:anywhere;word-break:break-all;font-weight:bold;}} .omission {{color:#777;font-size:6pt;line-height:1.1;margin-bottom:1mm;}} .omission-total {{color:#777;font-size:6.5pt;border-top:.4pt solid #bbb;padding-top:.6mm;margin-top:1mm;text-align:center;}}"""
-    def fit_column(es):
+    def fit_column(es, reserved=0):
         import unicodedata
         titles = [' '.join(str(e.get('summary') or '(제목 없음)').split()) for e in es]
         size = 8 * font_scale
         gap = max(1, min(2, entry_gap_px / 15))
         if not titles: return '', size, gap
-        limit = (height - (7 if monthly else 3)) * 96 / 25.4
+        limit = (height - reserved - (7 if monthly else 3)) * 96 / 25.4
         def important(e):
             name = e.get('calendar_name') or legend.get(e.get('calendar_id'), {}).get('name', '')
             name = unicodedata.normalize('NFKC', str(name)).replace(' ', '')
@@ -665,17 +681,48 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
             if monthly: body+='<tr>'+''.join('<th>'+h+'</th>' for h in days)+'</tr>'
             for row in rows:
                 heads=[]; cells=[]
+                active_days=[d for d in row if d in daily_data and (not monthly or d.month==first.month)]
+                spans={}
+                for d in active_days:
+                    for e in daily_data[d]['allday']:
+                        if allday_span(e): spans[span_key(e)]=e
+                lanes=[]; hidden=[]
+                for e in sorted(spans.values(),key=lambda e:(allday_span(e)[0],allday_span(e)[1],str(e.get('summary','')))):
+                    a,b=allday_span(e); covered=[i for i,d in enumerate(row) if d in active_days and a<=d<=b]
+                    if not covered: continue
+                    l,r=min(covered),max(covered)
+                    lane=next((v for v in lanes if all(r<x or l>y for x,y,_ in v)),None)
+                    if lane is None:
+                        lane=[]; lanes.append(lane)
+                    lane.append((l,r,e))
+                # Preserve ordinary event space; report overflow instead of adding pages.
+                max_lanes=max(1,min(6,int((height-(7 if monthly else 3))*.45/4.5)))
+                if len(lanes)>max_lanes:
+                    hidden=[e for lane in lanes[max_lanes:] for _,_,e in lane]; lanes=lanes[:max_lanes]
+                reserved=len(lanes)*4.5+(4 if hidden else 0)
                 for i,d in enumerate(row):
-                    data=daily_data.get(d,{'allday':[],'timed':[]})
-                    heads.append(f'{d.month}/{d.day} ({days[i]})')
-                    active=not monthly or d.month==first.month
-                    content,size,gap=fit_column(data['allday']+data['timed']) if active else ('',8*font_scale,1)
-                    label=f'<div class="date-label">{d.day}</div>' if monthly and active else ''
-                    cells.append(f'<td style="background:{"#fff" if active else "#f7f6f4"}">{label}<div style="font-size:{size}pt;--gap:{gap}mm">{content}</div></td>')
-                if not monthly: body+='<tr>'+''.join('<th>'+h+'</th>' for h in heads)+'</tr>'
+                    heads.append(f'{d.day}' if monthly and d in active_days else ('' if monthly else f'{d.month}/{d.day} ({days[i]})'))
+                body+='<tr>'+''.join('<th class="dayhead">'+h+'</th>' for h in heads)+'</tr>'
+                for lane in lanes:
+                    body+='<tr class="spanrow">'; i=0
+                    for l,r,e in sorted(lane):
+                        while i<l: body+='<td class="spanblank"></td>'; i+=1
+                        a,b=allday_span(e); color=str(e.get('real_color','#555555'))
+                        if not re.fullmatch(r'#[0-9a-fA-F]{6}',color): color='#555555'
+                        text=('← ' if a<row[l] else '')+str(e.get('summary') or '(제목 없음)')+' ('+span_label(a,b)+')'+(' →' if b>row[r] else '')
+                        body+=f'<td class="spancell" colspan="{r-l+1}"><div class="spanbar" style="color:{color};border-color:{color}">{escape(text)}</div></td>'; i=r+1
+                    while i<7: body+='<td class="spanblank"></td>'; i+=1
+                    body+='</tr>'
+                if hidden: body+=f'<tr><td colspan="7" class="spanhidden">종일 기간 일정 생략 {len(hidden)}건</td></tr>'
+                for i,d in enumerate(row):
+                    data=daily_data.get(d,{'allday':[],'timed':[]}); active=d in active_days
+                    es=[e for e in data['allday'] if not allday_span(e)]+data['timed']
+                    content,size,gap=fit_column(es,reserved+ (4 if monthly else 0)) if active else ('',8*font_scale,1)
+                    cells.append(f'<td class="daybody" style="height:{max(1,height-reserved-(5 if monthly else 0))}mm;background:{"#fff" if active else "#f7f6f4"}"><div style="font-size:{size}pt;--gap:{gap}mm">{content}</div></td>')
                 body+='<tr>'+''.join(cells)+'</tr>'
             body+='</table>'
             css=f"""@page {{size:A4 landscape;margin:{10 if monthly else 12}mm {side_margin_cm}cm;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;}} th {{background:#f1eee8;font-weight:normal;}} td {{height:{height}mm;}} .event {{margin-bottom:var(--gap);}}"""+style(8*font_scale,0)+'.event {margin-bottom:var(--gap);} .date-label {font-size:8pt;height:4mm;color:#555;} '
+            css += '.dayhead{font-size:8pt;padding:.5mm 1mm;height:3mm}.spanrow td{height:4.5mm;padding:0 .5mm;border-top:0;border-bottom:0}.spanbar{box-sizing:border-box;height:4mm;line-height:3.5mm;font-size:7pt;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-left:1.5pt solid;background:#f1eee8;padding:0 1mm}.spanhidden{height:4mm;padding:0;font-size:6pt;color:#777;text-align:center}.daybody{border-top:0}'
             pdf=HTML(string='<meta charset="utf-8"><body><h1>'+title+'</h1>'+body+'</body>').write_pdf(stylesheets=[CSS(string=css,font_config=fc)],font_config=fc)
             with fitz.open(stream=pdf,filetype='pdf') as doc:
                 if len(doc)!=1: raise RuntimeError('주간 양식을 한 페이지에 배치하지 못했습니다. 글자 크기 또는 여백을 줄여 주세요.')
@@ -704,7 +751,9 @@ def create_annual_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
             color=str(e.get('real_color','#555555'))
             if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?',color): color='#555555'
             name=str(e.get('calendar_name') or legend.get(e.get('calendar_id'),{}).get('name',''))
-            months[d.month].append((f'{d.day:02d}일  '+ ' '.join(str(e.get('summary') or '(제목 없음)').split()),color,'긍정' in name or '부정' in name))
+            span=allday_span(e)
+            prefix=(f'{span[0].day:02d}~{span[1].day:02d}일' if span[0].year==span[1].year and span[0].month==span[1].month else span_label(*span)) if span else f'{d.day:02d}일'
+            months[d.month].append((prefix+'  '+ ' '.join(str(e.get('summary') or '(제목 없음)').split()),color,'긍정' in name or '부정' in name))
     def css(sz,g):
         return f'body{{margin:0;font-family:NanumGothic,sans-serif;font-size:{sz}pt;line-height:1.22}} .ev{{border-left:1.2pt solid;padding-left:.7mm;margin-bottom:{g}mm;overflow-wrap:anywhere;word-break:break-all;font-weight:bold}} .omit{{font-size:6.5pt;color:#777;margin-bottom:1mm}}'
     def event(t,c): return f'<div class="ev" style="color:{c};border-color:{c}">{escape(t)}</div>'
@@ -895,7 +944,7 @@ if service:
         end_d=start_d+timedelta(days=6); include_empty=True
         st.caption('일요일~토요일 7일 고정 · 오늘이 포함된 주는 일기와 플래너 모두 선택 가능')
 
-    if (end_d - start_d).days > 100:
+    if layout == '일간' and (end_d - start_d).days > 100:
         st.warning("⚠️ 기간이 100일을 넘으면 서버 메모리 부족이 발생할 수 있습니다.")
 
     if st.button(f"📅 캘린더 {mode} 불러오기", type="primary"):

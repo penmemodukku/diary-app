@@ -1,3 +1,4 @@
+# V98.4 — 다년간 하이라이트
 # V98.3.4 — 인쇄 날짜 기준 시간 표기 개선
 # V98.3.2 — 일간 종일 일정 및 미리보기 개선
 # V98.3.1 — 종일 기간 일정 개선
@@ -139,15 +140,21 @@ def get_events_from_ids(service, target_ids, custom_colors, start_date, end_date
             
             cal_legend_info[cal_id] = {'name': cal_name, 'color': default_color}
 
-            events_result = service.events().list(
-                calendarId=cal_id, timeMin=time_min, timeMax=time_max,
-                maxResults=2500, singleEvents=True, orderBy='startTime'
-            ).execute()
-            
-            items = list(events_result.get('items', []))
-            while events_result.get('nextPageToken'):
-                events_result = service.events().list(calendarId=cal_id, timeMin=time_min, timeMax=time_max, maxResults=2500, singleEvents=True, orderBy='startTime', pageToken=events_result['nextPageToken']).execute()
-                items.extend(events_result.get('items', []))
+            items=[]; seen=set()
+            chunk_start=search_start
+            while chunk_start<search_end:
+                chunk_end=min(search_end,datetime(chunk_start.year+1,1,1))
+                token=None
+                while True:
+                    result=service.events().list(calendarId=cal_id,timeMin=chunk_start.isoformat()+'Z',timeMax=chunk_end.isoformat()+'Z',maxResults=2500,singleEvents=True,orderBy='startTime',pageToken=token).execute()
+                    for item in result.get('items',[]):
+                        identity=item.get('id')
+                        if identity and identity in seen:continue
+                        if identity:seen.add(identity)
+                        items.append(item)
+                    token=result.get('nextPageToken')
+                    if not token:break
+                chunk_start=chunk_end
             if items:
                 for event in items:
                     event['calendar_id'] = cal_id
@@ -860,9 +867,123 @@ def create_annual_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
                 out.insert_pdf(doc)
         return out.tobytes(garbage=3,deflate=True)
 
+def create_multiyear_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, entry_gap_px, include_empty, font_scale, layout):
+    from html import escape
+    import re
+    first=min(daily_data).year
+    last=max(daily_data).year
+    cols=2 if '두 열' in layout else 1
+    split='두 장' in layout
+    auto='자동 배분' in layout
+    fc=FontConfiguration()
+    width=210-20*side_margin_cm
+    cw=(width-23)/cols-3
+    base=8*font_scale
+    gap=max(1,min(2,entry_gap_px/15))
+    months={y:[] for y in range(first,last+1)}
+    for d,v in sorted(daily_data.items()):
+        for e in v['allday']+v['timed']:
+            # Annual highlights list each occurrence on its first visible day only.
+            start=e.get('dt_object')
+            origin=start.date() if start else date.fromisoformat(e.get('start',{}).get('date',str(d)))
+            if d!=max(origin,min(daily_data)): continue
+            color=str(e.get('real_color','#555555'))
+            if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?',color): color='#555555'
+            name=str(e.get('calendar_name') or legend.get(e.get('calendar_id'),{}).get('name',''))
+            span=allday_span(e)
+            prefix=span_label(*span) if span else f'{d:%m.%d}'
+            months[d.year].append((prefix+'  '+ ' '.join(str(e.get('summary') or '(제목 없음)').split()),color,'긍정' in name or '부정' in name or '올해의 사건' in name))
+    def css(sz,g):
+        return f'body{{margin:0;font-family:NanumGothic,sans-serif;font-size:{sz}pt;line-height:1.22}} .ev{{border-left:1.2pt solid;padding-left:.7mm;margin-bottom:{g}mm;overflow-wrap:anywhere;word-break:break-all;font-weight:bold}} .omit{{font-size:6.5pt;color:#777;margin-bottom:1mm}}'
+    def event(t,c): return f'<div class="ev" style="color:{c};border-color:{c}">{escape(t)}</div>'
+    def measure(items,sz,g):
+        if not items:return []
+        doc=HTML(string='<meta charset="utf-8">'+''.join(items)).render(stylesheets=[CSS(string=f'@page{{size:{cw}mm 10000mm;margin:0}}'+css(sz,g),font_config=fc)],font_config=fc)
+        return [(b.height+b.margin_top+b.margin_bottom)*25.4/96 for p in doc.pages for b in p._page_box.descendants() if type(b).__name__=='BlockBox' and b.element is not None and b.element.get('class') in ('ev','omit')]
+    def partition(h):
+        if cols==1:return len(h),sum(h)
+        total=sum(h); acc=0; best=(total,0)
+        for i in range(len(h)+1):
+            best=min(best,(max(acc,total-acc),-i))
+            if i<len(h):acc+=h[i]
+        return -best[1],best[0]
+    def prepare(es,sz,g,cap=False):
+        ts=[e[0] for e in es]; items=[event(t,e[1]) for t,e in zip(ts,es)]; h=measure(items,sz,g)
+        if cap:
+            limit=2*sz*1.22*25.4/72+g+.05
+            lo=[0]*len(ts); hi=[len(t) for t in ts]
+            while any(a<b for a,b in zip(lo,hi)):
+                mid=[(a+b+1)//2 for a,b in zip(lo,hi)]
+                trial=[event(t if n==len(t) else t[:n].rstrip()+'…',e[1]) for t,n,e in zip(ts,mid,es)]
+                hs=measure(trial,sz,g)
+                for i,n in enumerate(mid):
+                    if lo[i]==hi[i]:continue
+                    if hs[i]<=limit:lo[i]=n
+                    else:hi[i]=n-1
+            items=[event(t if n==len(t) else t[:n].rstrip()+'…',e[1]) for t,n,e in zip(ts,lo,es)];h=measure(items,sz,g)
+        return items,h
+    def fit(es,limit):
+        for sz,g,cap in [(base,gap,False),(base,1,False),(base,1,True),(max(min(base,6.5),base*.85),1,True)]:
+            items,h=prepare(es,sz,g,cap)
+            k,need=partition(h)
+            if need<=limit:return items,k,sz,g
+        keep=set(range(len(es))); order=[i for i in reversed(range(len(es))) if not es[i][2]]+[i for i in reversed(range(len(es))) if es[i][2]]
+        for drop in order:
+            keep.remove(drop); parts=[]; missing=False
+            for i,item in enumerate(items):
+                if i not in keep:missing=True;continue
+                if missing:parts.append('<div class="omit">···</div>');missing=False
+                parts.append(item)
+            parts.append(f'<div class="omit">생략 건수 {len(es)-len(keep)}건</div>')
+            k,need=partition(measure(parts,sz,g))
+            if need<=limit:return parts,k,sz,g
+        return [f'<div class="omit">생략 건수 {len(es)}건</div>'] if es else [],0 if cols==2 else 1,sz,g
+    years=list(months)
+    total=257
+    needs={y:partition(prepare(months[y],base,gap)[1])[1]+3 for y in years}
+    if '자동 페이지' in layout:
+        groups=[]; group=[]; used=0
+        for y in years:
+            need=max(12,needs[y])
+            if need>total:
+                raise ValueError(f'{y}년 기록이 한 페이지를 초과합니다. 캘린더를 줄이거나 글자 크기를 작게 선택하세요.')
+            if group and (used+need>total or (not auto and max([need]+[max(12,needs[z]) for z in group])*(len(group)+1)>total)):
+                groups.append(group);group=[];used=0
+            group.append(y);used+=need
+        if group:groups.append(group)
+    elif split and len(years)>1:
+        mid=(len(years)+1)//2;groups=[years[:mid],years[mid:]]
+    else:groups=[years]
+    with fitz.open() as out:
+        for group in groups:
+            if len(group)*8>total:
+                raise ValueError('연도 수가 너무 많습니다. 자동 페이지를 선택하세요.')
+            minimum=min(12,total/len(group))
+            if auto:
+                weights=[max(0,needs[y]-minimum) for y in group]
+                extra=total-minimum*len(group); weight=sum(weights)
+                heights=[minimum+extra*(w/weight if weight else 1/len(group)) for w in weights]
+            else:heights=[total/len(group)]*len(group)
+            if '자동 페이지' in layout:
+                required=[max(12,needs[y]) for y in group]
+                if not auto and max(required)*len(group)>total:
+                    raise ValueError('균등 배치로 모든 사건을 담을 수 없습니다. 자동 높이 배분을 선택하세요.')
+                if auto:heights=[n+(total-sum(required))/len(group) for n in required]
+            body=''; title=f'{group[0]} — {group[-1]}' if len(group)>1 else f'{group[0]}년'
+            for m,h in zip(group,heights):
+                items,k,sz,g=fit(months[m],h-3)
+                parts=[items] if cols==1 else [items[:k],items[k:]]
+                body+=f'<div class="month" style="height:{h}mm"><div class="label">{m}년</div>'+''.join(f'<div class="col" style="font-size:{sz}pt;--gap:{g}mm">'+''.join(p)+'</div>' for p in parts)+'</div>'
+            styles=f'@page{{size:A4 portrait;margin:10mm {side_margin_cm}cm}} h1{{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm}} .month{{display:flex;box-sizing:border-box;border:.5pt solid #bdb6ad;break-inside:avoid}} .label{{width:22mm;flex:none;background:#f1eee8;display:flex;align-items:center;justify-content:center;font-size:11pt;border-right:.5pt solid #bdb6ad}} .col{{width:{cw}mm;flex:none;padding:1mm;box-sizing:content-box}} .col+.col{{border-left:.4pt solid #ddd}}'+css(base,gap)+'.ev{margin-bottom:var(--gap)}'
+            pdf=HTML(string='<meta charset="utf-8"><h1>'+title+'</h1>'+body).write_pdf(stylesheets=[CSS(string=styles,font_config=fc)],font_config=fc)
+            with fitz.open(stream=pdf,filetype='pdf') as doc:
+                if len(doc)!=1:raise RuntimeError('다년간 페이지 배치 실패')
+                out.insert_pdf(doc)
+        return out.tobytes(garbage=3,deflate=True)
+
 def render_body(*args, planner=False):
     *base, layout = args
-    return create_full_pdf(*base, planner=planner) if layout=='일간' else create_annual_pdf(*base,layout) if layout.startswith('연간') else create_weekly_pdf(*base,layout)
+    return create_full_pdf(*base, planner=planner) if layout=='일간' else create_multiyear_pdf(*base,layout) if layout.startswith('다년간') else create_annual_pdf(*base,layout) if layout.startswith('연간') else create_weekly_pdf(*base,layout)
 
 # --- [6. Main UI] ---
 # Google Calendar is fetched once; print-layout changes reuse the downloaded events.
@@ -898,7 +1019,7 @@ if mode is None:
     st.stop()
 planner = mode == "플래너"
 st.header(mode + " · 인쇄")
-layout = st.radio("인쇄 양식", ["일간", "주간", "월간", "연간"], horizontal=True, key="v9812_layout_"+mode)
+layout = st.radio("인쇄 양식", ["일간", "주간", "월간", "연간", "다년간"], horizontal=True, key="v9812_layout_"+mode)
 service, robot_email = get_calendar_service()
 
 body_ready = False
@@ -946,11 +1067,15 @@ if service:
             except Exception: pass
         st.session_state[catalog_key]=(catalog,custom_colors)
     catalog,custom_colors=st.session_state[catalog_key]
+    def default_selected(name):
+        if planner or layout not in ('월간','연간','다년간'): return True
+        if layout in ('연간','다년간') and any('올해의 사건' in n for n in catalog.values()): return '올해의 사건' in name
+        return '긍정' in name or '부정' in name or not any('긍정' in n or '부정' in n for n in catalog.values())
     with st.sidebar:
         st.subheader('인쇄할 캘린더')
         if st.button('캘린더 목록 새로고침'):
             del st.session_state[catalog_key]; st.rerun()
-        final_ids=[cid for cid,name in catalog.items() if st.checkbox(name,value=(layout not in ('월간','연간') or planner or '긍정' in name or '부정' in name or not any('긍정' in n or '부정' in n for n in catalog.values())),key='v982_cal_'+mode+layout+cid)]
+        final_ids=[cid for cid,name in catalog.items() if st.checkbox(name,value=default_selected(name),key='v982_cal_'+mode+layout+cid)]
         st.caption('현재는 서비스 계정에 공유된 캘린더만 표시됩니다. 누락된 캘린더는 ID를 추가하세요.')
     if layout=='일간':
         col1,col2=st.columns(2)
@@ -975,6 +1100,17 @@ if service:
         columns=st.radio('사건 배치',['한 열','두 열'],index=1,horizontal=True,key='annual_cols_'+mode)
         heights=st.radio('월별 높이',['자동 배분','균등 배치'],horizontal=True,key='annual_height_'+mode)
         layout='연간 '+pages+' '+columns+' '+heights
+    elif layout=='다년간':
+        low,high=(today.year,2100) if planner else (1900,today.year)
+        c1,c2=st.columns(2)
+        with c1: first=st.selectbox('시작 연도',list(range(low,high+1)),index=max(0,today.year-9-low) if not planner else 0,key='multi_first_'+mode)
+        with c2: last=st.selectbox('종료 연도',list(range(first,high+1)),index=min(high-first,9) if planner else high-first,key='multi_last_'+mode)
+        start_d=date(first,1,1);end_d=date(last,12,31);include_empty=True
+        pages=st.radio('페이지 구성',['한 장','두 장','자동 페이지'],horizontal=True,key='multi_pages_'+mode)
+        columns=st.radio('사건 배치',['한 열','두 열'],index=1,horizontal=True,key='multi_cols_'+mode)
+        heights=st.radio('연도별 높이',['자동 배분','균등 배치'],horizontal=True,key='multi_height_'+mode)
+        layout='다년간 '+pages+' '+columns+' '+heights
+        st.caption(f'총 {last-first+1}년 · 주요 사건 캘린더를 권장합니다.')
     else:
         years=list(range(today.year,2101)) if planner else list(range(today.year,1899,-1))
         year=st.selectbox('연도',years,key='v982_year_'+mode)
@@ -1035,7 +1171,7 @@ if service:
         if not print_data:
             st.info("인쇄할 기록이 없습니다. 빈 날짜 인쇄를 선택하세요.")
         else:
-            day_keys = [start_d] if layout.startswith(("월간","연간")) else sorted(print_data.keys()) if layout=="일간" else sorted({week_start(d) for d in print_data})
+            day_keys = [start_d] if layout.startswith(("월간","연간","다년간")) else sorted(print_data.keys()) if layout=="일간" else sorted({week_start(d) for d in print_data})
             st.subheader("📐 인쇄 레이아웃")
             st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
             font_option = st.radio("본문 글자 크기", ["작게", "보통", "크게"], index=1, horizontal=True, key="v984_font_"+mode)
@@ -1043,7 +1179,7 @@ if service:
             st.caption("상세 기록 또는 주간 사건 제목에 적용됩니다. 날짜 머리글은 고정됩니다.")
             setting_cols = st.columns(3)
             with setting_cols[0]:
-                side_margin_cm = st.slider("본문 좌우 여백 (cm)", 0.8, 3.5, 1.0, 0.1, key="v9821_month_margin_"+mode+layout.split()[0]) if layout.startswith(("월간","연간")) else st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
+                side_margin_cm = st.slider("본문 좌우 여백 (cm)", 0.8, 3.5, 1.0, 0.1, key="v9821_month_margin_"+mode+layout.split()[0]) if layout.startswith(("월간","연간","다년간")) else st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
             with setting_cols[1]:
                 column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05, disabled=layout!="일간")
             with setting_cols[2]:
@@ -1067,8 +1203,8 @@ if service:
                 middle = st.container()
             with middle:
                 selected_day = st.selectbox(
-                    "미리 볼 연도" if layout.startswith("연간") else "미리 볼 월" if layout.startswith("월간") else "미리 볼 날짜" if layout=="일간" else "미리 볼 주", day_keys,
-                    format_func=lambda x: f"{x.year}년" if layout.startswith("연간") else f"{x.year}년 {x.month}월" if layout.startswith(("월간","연간")) else str(x) if layout=="일간" else f"{x} ~ {x+timedelta(days=6)}", key="v981_preview_"+mode+layout,
+                    "선택 기간" if layout.startswith("다년간") else "미리 볼 연도" if layout.startswith("연간") else "미리 볼 월" if layout.startswith("월간") else "미리 볼 날짜" if layout=="일간" else "미리 볼 주", day_keys,
+                    format_func=lambda x: f"{start_d.year}~{end_d.year}년" if layout.startswith("다년간") else f"{x.year}년" if layout.startswith("연간") else f"{x.year}년 {x.month}월" if layout.startswith(("월간","연간","다년간")) else str(x) if layout=="일간" else f"{x} ~ {x+timedelta(days=6)}", key="v981_preview_"+mode+layout,
                 )
             current_key = (
                 str(selected_day), round(side_margin_cm, 2),
@@ -1079,7 +1215,7 @@ if service:
                 with st.spinner("변경된 설정으로 미리보기를 갱신하는 중..."):
                     try:
                         st.session_state["preview_pdf"] = render_body(
-                            print_data if layout.startswith(("월간","연간")) else {selected_day: cached["data"][selected_day]} if layout=="일간" else {d:v for d,v in print_data.items() if week_start(d)==selected_day},
+                            print_data if layout.startswith(("월간","연간","다년간")) else {selected_day: cached["data"][selected_day]} if layout=="일간" else {d:v for d,v in print_data.items() if week_start(d)==selected_day},
                             cached["legend"], cached["ids"],
                             side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE, layout, planner=planner,
                         )
@@ -1096,7 +1232,7 @@ if service:
                 try:
                     with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
                         page_count = len(doc)
-                        st.caption(f"선택 기간: {page_count}페이지" + (" (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (연간)" if layout.startswith("연간") else " (월간)" if layout.startswith("월간") else " (한 주당 한 페이지)"))
+                        st.caption(f"선택 기간: {page_count}페이지" + (" (다년간)" if layout.startswith("다년간") else " (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (연간)" if layout.startswith("연간") else " (월간)" if layout.startswith("월간") else " (한 주당 한 페이지)"))
                         if st.session_state["preview_page"] > page_count:
                             st.session_state["preview_page"] = page_count
                         previous, counter, following = st.columns([1, 2, 1])

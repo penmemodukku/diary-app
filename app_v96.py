@@ -1,4 +1,4 @@
-# V98.4 — 다년간 하이라이트
+# V98.4.1 — 주차 선택 개선
 # V98.3.4 — 인쇄 날짜 기준 시간 표기 개선
 # V98.3.2 — 일간 종일 일정 및 미리보기 개선
 # V98.3.1 — 종일 기간 일정 개선
@@ -1113,11 +1113,46 @@ if service:
         st.caption(f'총 {last-first+1}년 · 주요 사건 캘린더를 권장합니다.')
     else:
         years=list(range(today.year,2101)) if planner else list(range(today.year,1899,-1))
-        year=st.selectbox('연도',years,key='v982_year_'+mode)
-        first=week_start(date(year,1,1)); last=week_start(date(year,12,31))
-        weeks=[first+timedelta(days=7*i) for i in range((last-first).days//7+1)]
-        weeks=[w for w in weeks if (w+timedelta(days=6)>=today if planner else w<=today)]
-        start_d=st.selectbox('주차',weeks,index=weeks.index(week_start(today)) if week_start(today) in weeks else 0,format_func=lambda w:f'{(w-first).days//7+1}주차 · {w:%m/%d} ~ {w+timedelta(days=6):%m/%d}',key='v982_week_'+mode+str(year))
+        year_key='v9841_year_'+mode
+        week_key='v9841_week_'+mode
+        def available_weeks(y):
+            first=week_start(date(y,1,1)); last=week_start(date(y,12,31))
+            return [w for i in range((last-first).days//7+1)
+                    for w in [first+timedelta(days=7*i)]
+                    if (w+timedelta(days=6)>=today if planner else w<=today)]
+        def change_week_year():
+            y=st.session_state[year_key]
+            ws=available_weeks(y)
+            st.session_state[week_key]=week_start(today) if week_start(today) in ws else (ws[0] if planner else ws[-1])
+        def move_week(delta):
+            target=st.session_state[week_key]+timedelta(days=7*delta)
+            y=st.session_state[year_key]
+            candidates=[y,target.year,(target+timedelta(days=6)).year]
+            for candidate in candidates:
+                if candidate in years and target in available_weeks(candidate):
+                    st.session_state[year_key]=candidate
+                    st.session_state[week_key]=target
+                    return
+        def current_week():
+            st.session_state[year_key]=today.year
+            st.session_state[week_key]=week_start(today)
+        year=st.selectbox('연도',years,key=year_key,on_change=change_week_year)
+        first=week_start(date(year,1,1))
+        weeks=available_weeks(year)
+        if st.session_state.get(week_key) not in weeks:
+            st.session_state[week_key]=week_start(today) if week_start(today) in weeks else (weeks[0] if planner else weeks[-1])
+        selected=st.session_state[week_key]
+        def can_move(delta):
+            target=selected+timedelta(days=7*delta)
+            return any(y in years and target in available_weeks(y) for y in {year,target.year,(target+timedelta(days=6)).year})
+        prev_col,week_col,next_col=st.columns([1,4,1])
+        with prev_col:
+            st.button('← 전주',key='v9841_prev_'+mode,on_click=move_week,args=(-1,),disabled=not can_move(-1))
+        with week_col:
+            start_d=st.selectbox('주차',list(reversed(weeks)),format_func=lambda w:f'{(w-first).days//7+1}주차 · {w:%m/%d} ~ {w+timedelta(days=6):%m/%d}',key=week_key)
+        with next_col:
+            st.button('다음 주 →',key='v9841_next_'+mode,on_click=move_week,args=(1,),disabled=not can_move(1))
+        st.button('이번 주로 이동',key='v9841_today_'+mode,on_click=current_week)
         end_d=start_d+timedelta(days=6); include_empty=True
         st.caption('일요일~토요일 7일 고정 · 오늘이 포함된 주는 일기와 플래너 모두 선택 가능')
 

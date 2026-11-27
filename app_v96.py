@@ -1,3 +1,4 @@
+# V98.5 — 월간·연간 복수 선택
 # V98.4.3 — 주간 미리보기 및 선택 디자인 개선
 # V98.4.1 — 주차 선택 개선
 # V98.3.4 — 인쇄 날짜 기준 시간 표기 개선
@@ -993,8 +994,63 @@ def create_multiyear_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm,
                 out.insert_pdf(doc)
         return out.tobytes(garbage=3,deflate=True)
 
+def period_end(d, kind):
+    import calendar
+    if kind == '월간': return date(d.year,d.month,calendar.monthrange(d.year,d.month)[1])
+    if kind == '연간': return date(d.year,12,31)
+    return d+timedelta(days=6)
+
+def period_start(d, kind):
+    if kind == '월간': return d.replace(day=1)
+    if kind == '연간': return d.replace(month=1,day=1)
+    return week_start(d)
+
+def render_period_picker(kind, mode, today, planner):
+    prefix='v985_'+kind+mode
+    sk=prefix+'_selected'; nk=prefix+'_nav'
+    current=period_start(today,kind)
+    if sk not in st.session_state: st.session_state[sk]={current}
+    if nk not in st.session_state: st.session_state[nk]=today.year if kind=='월간' else today.year//10*10
+    def allowed(d):
+        return 1900<=d.year<=2100 and (period_end(d,kind)>=today if planner else d<=today)
+    def toggle(d):
+        chosen=set(st.session_state[sk]); chosen.symmetric_difference_update({d}); st.session_state[sk]=chosen
+    def move(delta): st.session_state[nk]+=delta
+    def select_all(ds): st.session_state[sk]=set(st.session_state[sk])|set(ds)
+    n=st.session_state[nk]; step=1 if kind=='월간' else 10
+    lo=(today.year if planner else 1900) if kind=='월간' else (today.year//10*10 if planner else 1900)
+    hi=(2100 if planner else today.year) if kind=='월간' else (2100 if planner else today.year//10*10)
+    a,b,c=st.columns([1,4,1]); a.button('◀',key=prefix+'prev',on_click=move,args=(-step,),disabled=n<=lo,use_container_width=True)
+    b.markdown(f'<div style="text-align:center;font-size:1.25rem;font-weight:bold">{n}년</div>' if kind=='월간' else f'<div style="text-align:center;font-size:1.25rem;font-weight:bold">{n} — {n+9}</div>',unsafe_allow_html=True)
+    c.button('▶',key=prefix+'next',on_click=move,args=(step,),disabled=n>=hi,use_container_width=True)
+    ds=[date(n,m,1) for m in range(1,13)] if kind=='월간' else [date(y,1,1) for y in range(n,n+10)]
+    width=3 if kind=='월간' else 2
+    for i in range(0,len(ds),width):
+        for col,d in zip(st.columns(width),ds[i:i+width]):
+            checked=d in st.session_state[sk]
+            label=('✓  ' if checked else '○  ')+(f'{d.month}월' if kind=='월간' else f'{d.year}년')
+            col.button(label,key=prefix+str(d),type='primary' if checked else 'secondary',disabled=not allowed(d),on_click=toggle,args=(d,),use_container_width=True)
+    a,b,c=st.columns(3)
+    a.button('전체 선택',key=prefix+'all',on_click=select_all,args=([d for d in ds if allowed(d)],))
+    b.button('올해',key=prefix+'today',on_click=lambda:st.session_state.update({nk:today.year if kind=='월간' else today.year//10*10}))
+    c.button('선택 해제',key=prefix+'clear',on_click=lambda:st.session_state.update({sk:set()}))
+    chosen=tuple(sorted(d for d in st.session_state[sk] if allowed(d)))
+    for d in chosen:
+        a,b=st.columns([5,1]); a.write(f'{d.year}년 {d.month}월' if kind=='월간' else f'{d.year}년'); b.button('×',key=prefix+'remove'+str(d),on_click=toggle,args=(d,))
+    return chosen
+
 def render_body(*args, planner=False):
     *base, layout = args
+    if layout.startswith(('월간','연간')):
+        kind=layout.split()[0]
+        data,*settings=base
+        groups={}
+        for d,v in sorted(data.items()): groups.setdefault(period_start(d,kind),{})[d]=v
+        engine=create_annual_pdf if kind=='연간' else create_weekly_pdf
+        with fitz.open() as out:
+            for group in groups.values():
+                with fitz.open(stream=engine(group,*settings,layout),filetype='pdf') as doc: out.insert_pdf(doc)
+            return out.tobytes(garbage=3,deflate=True)
     return create_full_pdf(*base, planner=planner) if layout=='일간' else create_multiyear_pdf(*base,layout) if layout.startswith('다년간') else create_annual_pdf(*base,layout) if layout.startswith('연간') else create_weekly_pdf(*base,layout)
 
 # --- [6. Main UI] ---
@@ -1097,22 +1153,21 @@ if service:
         with col2:
             end_d=st.date_input('종료 날짜',today,min_value=today if planner else date(1900,1,1),max_value=date(2100,12,31) if planner else today,key='v98_end_'+mode)
         include_empty=st.checkbox('일정이 없는 날짜도 인쇄',value=planner,key='v98_empty_'+mode)
-    elif layout=='월간':
-        import calendar
-        years=list(range(today.year,2101)) if planner else list(range(today.year,1899,-1))
-        year=st.selectbox('연도',years,key='monthly_year_'+mode)
-        months=[m for m in range(1,13) if (year!=today.year or (m>=today.month if planner else m<=today.month))]
-        month=st.selectbox('월',months,index=months.index(today.month) if today.month in months else 0,format_func=lambda m:f'{m}월',key='monthly_month_'+mode)
-        start_d=date(year,month,1); end_d=date(year,month,calendar.monthrange(year,month)[1]); include_empty=True
-        layout='월간 한 장'
-    elif layout=='연간':
-        years=list(range(today.year,2101)) if planner else list(range(today.year,1899,-1))
-        year=st.selectbox('연도',years,key='annual_year_'+mode)
-        start_d=date(year,1,1); end_d=date(year,12,31); include_empty=True
-        pages=st.radio('페이지 구성',['한 장','두 장'],horizontal=True,key='annual_pages_'+mode)
-        columns=st.radio('사건 배치',['한 열','두 열'],index=1,horizontal=True,key='annual_cols_'+mode)
-        heights=st.radio('월별 높이',['자동 배분','균등 배치'],horizontal=True,key='annual_height_'+mode)
-        layout='연간 '+pages+' '+columns+' '+heights
+    elif layout in ('월간','연간'):
+        kind=layout
+        selected_weeks=render_period_picker(kind,mode,today,planner)
+        start_d=selected_weeks[0] if selected_weeks else today
+        end_d=period_end(selected_weeks[-1],kind) if selected_weeks else today
+        include_empty=True
+        if kind=='월간':
+            layout='월간 한 장'
+            st.caption(f'선택한 {len(selected_weeks)}개월 · A4 {len(selected_weeks)}장')
+        else:
+            pages=st.radio('페이지 구성',['한 장','두 장'],horizontal=True,key='annual_pages_'+mode)
+            columns=st.radio('사건 배치',['한 열','두 열'],index=1,horizontal=True,key='annual_cols_'+mode)
+            heights=st.radio('월별 높이',['자동 배분','균등 배치'],horizontal=True,key='annual_height_'+mode)
+            layout='연간 '+pages+' '+columns+' '+heights
+            st.caption(f'선택한 {len(selected_weeks)}년 · A4 {len(selected_weeks)*(2 if pages=="두 장" else 1)}장')
     elif layout=='다년간':
         low,high=(today.year,2100) if planner else (1900,today.year)
         c1,c2=st.columns(2)
@@ -1198,9 +1253,10 @@ if service:
                     daily_data, cal_legend_info, logs = {}, {}, []
                     groups=[]
                     for w in selected_weeks:
+                        finish=period_end(w,layout.split()[0])
                         if groups and w == groups[-1][1]+timedelta(days=1):
-                            groups[-1]=(groups[-1][0],w+timedelta(days=6))
-                        else: groups.append((w,w+timedelta(days=6)))
+                            groups[-1]=(groups[-1][0],finish)
+                        else: groups.append((w,finish))
                     for a,b in groups:
                         data, legend, messages=get_events_from_ids(service,final_ids,custom_colors,a,b)
                         daily_data.update(data); cal_legend_info.update(legend); logs.extend(messages)
@@ -1218,7 +1274,7 @@ if service:
                 st.session_state["cached_diary"] = {
                     "data": daily_data, "legend": cal_legend_info,
                     "ids": final_ids, "start": start_d, "end": end_d,
-                    "count": total_count, "manual": manual, "weeks": selected_weeks,
+                    "count": total_count, "manual": manual, "weeks": selected_weeks, "kind": layout.split()[0],
                 }
                 st.session_state["preview_key"] = None
                 st.session_state["preview_pdf"] = None
@@ -1228,9 +1284,9 @@ if service:
                 st.success(f"총 {total_count}개 기록을 불러왔습니다. 이제 여백을 조절해 보세요.")
 
     cached = st.session_state["cached_diary"]
-    if cached and (cached["start"] != start_d or cached["end"] != end_d or cached["ids"] != final_ids or cached.get("manual") != manual or cached.get("weeks") != selected_weeks):
+    if cached and (cached["start"] != start_d or cached["end"] != end_d or cached["ids"] != final_ids or cached.get("manual") != manual or cached.get("weeks") != selected_weeks or cached.get("kind") != layout.split()[0]):
         st.info("날짜 또는 캘린더 선택이 변경되었습니다. 다시 불러오세요.")
-    if cached and cached["start"] == start_d and cached["end"] == end_d and cached["ids"] == final_ids and cached.get("manual") == manual and cached.get("weeks") == selected_weeks and selected_weeks != ():
+    if cached and cached["start"] == start_d and cached["end"] == end_d and cached["ids"] == final_ids and cached.get("manual") == manual and cached.get("weeks") == selected_weeks and cached.get("kind") == layout.split()[0] and selected_weeks != ():
         if cached["start"] != start_d or cached["end"] != end_d:
             st.warning("선택한 날짜가 불러온 일기의 기간과 다릅니다. 새 기간을 적용하려면 다시 불러오세요.")
         st.subheader("인쇄 설정")
@@ -1239,7 +1295,7 @@ if service:
         if not print_data:
             st.info("인쇄할 기록이 없습니다. 빈 날짜 인쇄를 선택하세요.")
         else:
-            day_keys = [start_d] if layout.startswith(("월간","연간","다년간")) else sorted(print_data.keys()) if layout=="일간" else sorted({week_start(d) for d in print_data})
+            day_keys = list(selected_weeks) if layout.startswith(("월간","연간")) else [start_d] if layout.startswith("다년간") else sorted(print_data.keys()) if layout=="일간" else sorted({week_start(d) for d in print_data})
             st.subheader("📐 인쇄 레이아웃")
             st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
             font_option = st.radio("본문 글자 크기", ["작게", "보통", "크게"], index=1, horizontal=True, key="v984_font_"+mode)
@@ -1261,12 +1317,12 @@ if service:
                 idx = day_keys.index(st.session_state[date_key])
                 st.session_state[date_key] = day_keys[max(0,min(len(day_keys)-1,idx+delta))]
                 st.session_state["preview_page"] = 1
-            if layout in ("일간", "주간"):
+            if not layout.startswith("다년간"):
                 left, middle, right = st.columns([1,3,1])
                 with left:
-                    st.button("◀ 이전 주" if layout=="주간" else "◀ 전날", disabled=st.session_state[date_key]==day_keys[0], on_click=shift_preview_day,args=(-1,))
+                    st.button("◀ 전날" if layout=="일간" else "◀ 이전", disabled=st.session_state[date_key]==day_keys[0], on_click=shift_preview_day,args=(-1,))
                 with right:
-                    st.button("다음 주 ▶" if layout=="주간" else "다음 날 ▶", disabled=st.session_state[date_key]==day_keys[-1], on_click=shift_preview_day,args=(1,))
+                    st.button("다음 날 ▶" if layout=="일간" else "다음 ▶", disabled=st.session_state[date_key]==day_keys[-1], on_click=shift_preview_day,args=(1,))
             else:
                 middle = st.container()
             with middle:
@@ -1283,7 +1339,7 @@ if service:
                 with st.spinner("변경된 설정으로 미리보기를 갱신하는 중..."):
                     try:
                         st.session_state["preview_pdf"] = render_body(
-                            print_data if layout.startswith(("월간","연간","다년간")) else {selected_day: cached["data"][selected_day]} if layout=="일간" else {d:v for d,v in print_data.items() if week_start(d)==selected_day},
+                            {d:v for d,v in print_data.items() if period_start(d,layout.split()[0])==selected_day} if layout.startswith(("월간","연간")) else print_data if layout.startswith("다년간") else {selected_day: cached["data"][selected_day]} if layout=="일간" else {d:v for d,v in print_data.items() if week_start(d)==selected_day},
                             cached["legend"], cached["ids"],
                             side_margin_cm, column_gap_cm, entry_gap_px, include_empty, FONT_SCALE, layout, planner=planner,
                         )
@@ -1300,9 +1356,9 @@ if service:
                 try:
                     with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
                         page_count = len(doc)
-                        if layout == "주간":
+                        if layout == "주간" or layout.startswith("월간"):
                             st.session_state["preview_page"] = 1
-                            st.caption(f"{day_keys.index(selected_day)+1} / {len(day_keys)}주 · 한 주당 한 페이지")
+                            st.caption(f"{day_keys.index(selected_day)+1} / {len(day_keys)}" + ("주 · 한 주당 한 페이지" if layout=="주간" else "개월 · 한 달당 한 페이지"))
                         else:
                             st.caption(f"선택 기간: {page_count}페이지" + (" (다년간)" if layout.startswith("다년간") else " (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (연간)" if layout.startswith("연간") else " (월간)" if layout.startswith("월간") else " (한 주당 한 페이지)"))
                             if st.session_state["preview_page"] > page_count:
@@ -1311,9 +1367,9 @@ if service:
                             def shift_page(delta, count):
                                 st.session_state["preview_page"] = max(1,min(count,st.session_state["preview_page"]+delta))
                             with previous:
-                                st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1, on_click=shift_page,args=(-1,page_count))
+                                st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1, on_click=shift_page,args=(-1,page_count),key="preview_page_prev")
                             with following:
-                                st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count, on_click=shift_page,args=(1,page_count))
+                                st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count, on_click=shift_page,args=(1,page_count),key="preview_page_next")
                             with counter:
                                 st.markdown(f"**{st.session_state['preview_page']} / {page_count} 페이지**")
                         page = doc.load_page(st.session_state["preview_page"] - 1)

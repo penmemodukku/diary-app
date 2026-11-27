@@ -1,3 +1,4 @@
+# V98.6 — 세션 설정 및 프리셋
 # V98.5.3 — 주간·월간 용지 방향 및 선택 색상 개선
 # V98.5 — 월간·연간 복수 선택
 # V98.4.3 — 주간 미리보기 및 선택 디자인 개선
@@ -711,7 +712,7 @@ def create_calendar_flow_pdf(daily_data, legend, ids, side_margin_cm, column_gap
                 for j in range(n):
                     cols=[x[j] if j<len(x) else [] for x in parts]; more=[j+1<len(x) for x in parts]
                     title=f'{w:%Y.%m.%d} — {row[-1]:%Y.%m.%d}'+(f' ({j+1}/{n})' if n>1 else '')
-                    emit(out,title,row_html(row,cols,h,j==0,footer,more,continued=[j>0 and j<len(x) for x in parts]),base,gap)
+                    emit(out,title,row_html(row,cols,h,True,footer,more,continued=[j>0 and j<len(x) for x in parts]),base,gap)
         else:
             first=min(daily_data).replace(day=1); rows=calendar.Calendar(firstweekday=6).monthdatescalendar(first.year,first.month); es=[entries(r,first.month) for r in rows]
             avail=budget-8; sz=base; g=gap
@@ -1199,6 +1200,53 @@ def render_body(*args, planner=False):
             return out.tobytes(garbage=3,deflate=True)
     return create_full_pdf(*base, planner=planner) if layout=='일간' else create_multiyear_pdf(*base,layout) if layout.startswith('다년간') else create_annual_pdf(*base,layout) if layout.startswith('연간') else create_weekly_pdf(*base,layout)
 
+# Settings are stored separately from Streamlit widget keys (which are cleaned up when hidden).
+from copy import deepcopy
+
+def print_defaults(kind, planner, catalog, default_selected):
+    values = {'font':'보통', 'margin_regular':2.4, 'margin_narrow':1.0,
+              'column_gap':0.85, 'entry_gap':17}
+    values.update({'cal:'+cid:default_selected(name) for cid,name in catalog.items()})
+    if kind=='일간': values['empty']=planner
+    if kind in ('주간','월간'):
+        values.update(direction='가로', flow='모든 기록 출력' if kind=='주간' else '한 페이지에 맞추기')
+        if kind=='주간': values['footer']=True
+        else: values['height']='자동 배분'
+    if kind in ('연간','다년간'): values.update(pages='한 장', columns='두 열', height='자동 배분')
+    return values
+
+def setting_widget(widget, field, label, *args, **kwargs):
+    key='_v986_widget_'+settings_scope+'_'+field
+    value=active_settings[field]
+    if key not in st.session_state: st.session_state[key]=value
+    def changed(): active_settings[field]=st.session_state[key]
+    result=widget(label,*args,key=key,on_change=changed,**kwargs)
+    active_settings[field]=result
+    return result
+
+def preset_panel(defaults):
+    presets=st.session_state.setdefault('_v986_presets',{}).setdefault(settings_scope,{})
+    prefix='_v986_preset_'+settings_scope
+    def apply(values):
+        active_settings.clear(); active_settings.update(deepcopy(defaults))
+        active_settings.update({k:deepcopy(v) for k,v in values.items() if k in defaults})
+        for k in defaults: st.session_state.pop('_v986_widget_'+settings_scope+'_'+k,None)
+        st.session_state['preview_key']=None; st.session_state['preview_page']=1
+    def save(name):
+        name=name.strip()
+        if name: presets[name]=deepcopy(active_settings)
+    with st.expander('인쇄 프리셋',expanded=False):
+        st.caption('현재 세션에서 양식별 설정을 자동 유지합니다. 날짜와 사진은 저장하지 않습니다.')
+        name=st.text_input('새 프리셋 이름',key=prefix+'_name')
+        st.button('새 프리셋 저장',key=prefix+'_save',disabled=not name.strip() or name.strip() in presets,on_click=save,args=(name,))
+        if presets:
+            chosen=st.selectbox('저장된 프리셋',list(presets),key=prefix+'_choice')
+            a,b,c=st.columns(3)
+            a.button('불러오기',key=prefix+'_load',on_click=apply,args=(deepcopy(presets[chosen]),))
+            b.button('현재 설정으로 수정',key=prefix+'_update',on_click=save,args=(chosen,))
+            c.button('삭제',key=prefix+'_delete',on_click=lambda:presets.pop(chosen,None))
+        st.button('기본값 복원',key=prefix+'_reset',on_click=apply,args=(deepcopy(defaults),))
+
 # --- [6. Main UI] ---
 # Google Calendar is fetched once; print-layout changes reuse the downloaded events.
 for key, default in {
@@ -1285,11 +1333,16 @@ if service:
         if planner or layout not in ('월간','연간','다년간'): return True
         if layout in ('연간','다년간') and any('올해의 사건' in n for n in catalog.values()): return '올해의 사건' in name
         return '긍정' in name or '부정' in name or '올해의사건' in name or not any('긍정' in n or '부정' in n for n in catalog.values())
+    settings_scope=mode+'_'+layout
+    defaults=print_defaults(layout,planner,catalog,default_selected)
+    active_settings=st.session_state.setdefault('_v986_settings',{}).setdefault(settings_scope,{})
+    for field,value in defaults.items(): active_settings.setdefault(field,value)
+    preset_panel(defaults)
     with st.sidebar:
         st.subheader('인쇄할 캘린더')
         if st.button('캘린더 목록 새로고침'):
             del st.session_state[catalog_key]; st.rerun()
-        final_ids=[cid for cid,name in catalog.items() if st.checkbox(name,value=default_selected(name),key='v982_cal_'+mode+layout+cid)]
+        final_ids=[cid for cid,name in catalog.items() if setting_widget(st.checkbox,'cal:'+cid,name)]
         st.caption('현재는 서비스 계정에 공유된 캘린더만 표시됩니다. 누락된 캘린더는 ID를 추가하세요.')
     selected_weeks = None
     if layout=='일간':
@@ -1298,7 +1351,7 @@ if service:
             start_d=st.date_input('시작 날짜',today,min_value=today if planner else date(1900,1,1),max_value=date(2100,12,31) if planner else today,key='v98_start_'+mode)
         with col2:
             end_d=st.date_input('종료 날짜',today,min_value=today if planner else date(1900,1,1),max_value=date(2100,12,31) if planner else today,key='v98_end_'+mode)
-        include_empty=st.checkbox('일정이 없는 날짜도 인쇄',value=planner,key='v98_empty_'+mode)
+        include_empty=setting_widget(st.checkbox,'empty','일정이 없는 날짜도 인쇄')
     elif layout in ('월간','연간'):
         kind=layout
         selected_weeks=render_period_picker(kind,mode,today,planner)
@@ -1309,9 +1362,9 @@ if service:
             layout='월간 한 장'
             st.caption(f'선택한 {len(selected_weeks)}개월')
         else:
-            pages=st.radio('페이지 구성',['한 장','두 장'],horizontal=True,key='annual_pages_'+mode)
-            columns=st.radio('사건 배치',['한 열','두 열'],index=1,horizontal=True,key='annual_cols_'+mode)
-            heights=st.radio('월별 높이',['자동 배분','균등 배치'],horizontal=True,key='annual_height_'+mode)
+            pages=setting_widget(st.radio,'pages','페이지 구성',['한 장','두 장'],horizontal=True)
+            columns=setting_widget(st.radio,'columns','사건 배치',['한 열','두 열'],horizontal=True)
+            heights=setting_widget(st.radio,'height','월별 높이',['자동 배분','균등 배치'],horizontal=True)
             layout='연간 '+pages+' '+columns+' '+heights
             st.caption(f'선택한 {len(selected_weeks)}년 · A4 {len(selected_weeks)*(2 if pages=="두 장" else 1)}장')
     elif layout=='다년간':
@@ -1320,9 +1373,9 @@ if service:
         with c1: first=st.selectbox('시작 연도',list(range(low,high+1)),index=max(0,today.year-9-low) if not planner else 0,key='multi_first_'+mode)
         with c2: last=st.selectbox('종료 연도',list(range(first,high+1)),index=min(high-first,9) if planner else high-first,key='multi_last_'+mode)
         start_d=date(first,1,1);end_d=date(last,12,31);include_empty=True
-        pages=st.radio('페이지 구성',['한 장','두 장','자동 페이지'],horizontal=True,key='multi_pages_'+mode)
-        columns=st.radio('사건 배치',['한 열','두 열'],index=1,horizontal=True,key='multi_cols_'+mode)
-        heights=st.radio('연도별 높이',['자동 배분','균등 배치'],horizontal=True,key='multi_height_'+mode)
+        pages=setting_widget(st.radio,'pages','페이지 구성',['한 장','두 장','자동 페이지'],horizontal=True)
+        columns=setting_widget(st.radio,'columns','사건 배치',['한 열','두 열'],horizontal=True)
+        heights=setting_widget(st.radio,'height','연도별 높이',['자동 배분','균등 배치'],horizontal=True)
         layout='다년간 '+pages+' '+columns+' '+heights
         st.caption(f'총 {last-first+1}년 · 주요 사건 캘린더를 권장합니다.')
     else:
@@ -1382,15 +1435,15 @@ if service:
         include_empty=True
 
     if layout.startswith(('주간','월간')):
-        direction=st.radio('용지 방향',['가로','세로'],horizontal=True,key='paper_direction_'+mode+layout.split()[0])
+        direction=setting_widget(st.radio,'direction','용지 방향',['가로','세로'],horizontal=True)
         layout += ' '+direction
         kind=layout.split()[0]
-        output=st.radio('출력 방식',['모든 기록 출력','한 페이지에 맞추기'] if kind=='주간' else ['한 페이지에 맞추기','모든 기록 출력'],key='flow_'+mode+kind)
+        output=setting_widget(st.radio,'flow','출력 방식',['모든 기록 출력','한 페이지에 맞추기'] if kind=='주간' else ['한 페이지에 맞추기','모든 기록 출력'])
         layout += ' 전체출력' if output=='모든 기록 출력' else ' 한장맞춤'
         if kind=='월간':
-            layout += ' 균등높이' if st.radio('주별 높이',['자동 배분','균등 배치'],horizontal=True,key='height_'+mode)=='균등 배치' else ' 자동높이'
+            layout += ' 균등높이' if setting_widget(st.radio,'height','주별 높이',['자동 배분','균등 배치'],horizontal=True)=='균등 배치' else ' 자동높이'
         else:
-            if not st.checkbox('하단 날짜·요일 표시',value=True,key='footer_'+mode):layout+=' 하단없음'
+            if not setting_widget(st.checkbox,'footer','하단 날짜·요일 표시'):layout+=' 하단없음'
 
     if layout == '일간' and (end_d - start_d).days > 100:
         st.warning("⚠️ 기간이 100일을 넘으면 서버 메모리 부족이 발생할 수 있습니다.")
@@ -1455,16 +1508,16 @@ if service:
             day_keys = list(selected_weeks) if layout.startswith(("월간","연간")) else [start_d] if layout.startswith("다년간") else sorted(print_data.keys()) if layout=="일간" else sorted({week_start(d) for d in print_data})
             st.subheader("📐 인쇄 레이아웃")
             st.caption("슬라이더를 바꾸면 아래 선택한 날짜의 **실제 PDF 미리보기**가 자동 갱신됩니다. 구글캘린더는 다시 조회하지 않습니다.")
-            font_option = st.radio("본문 글자 크기", ["작게", "보통", "크게"], index=1, horizontal=True, key="v984_font_"+mode)
+            font_option = setting_widget(st.radio,"font","본문 글자 크기", ["작게", "보통", "크게"], horizontal=True)
             FONT_SCALE = {"작게": 0.85, "보통": 1.0, "크게": 1.2}[font_option]
             st.caption("상세 기록 또는 주간 사건 제목에 적용됩니다. 날짜 머리글은 고정됩니다.")
             setting_cols = st.columns(3)
             with setting_cols[0]:
-                side_margin_cm = st.slider("본문 좌우 여백 (cm)", 0.8, 3.5, 1.0, 0.1, key="v9821_month_margin_"+mode+layout.split()[0]) if layout.startswith(("월간","연간","다년간")) or (layout.startswith("주간") and "세로" in layout) else st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
+                side_margin_cm = setting_widget(st.slider,"margin_narrow","본문 좌우 여백 (cm)",0.8,3.5,step=0.1) if layout.startswith(("월간","연간","다년간")) or (layout.startswith("주간") and "세로" in layout) else setting_widget(st.slider,"margin_regular","본문 좌우 여백 (cm)",1.5,3.5,step=0.1)
             with setting_cols[1]:
-                column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05, disabled=layout!="일간")
+                column_gap_cm = setting_widget(st.slider,"column_gap","2단 사이 간격 (cm)",0.5,1.5,step=0.05,disabled=layout!="일간")
             with setting_cols[2]:
-                entry_gap_px = st.slider("엔트리 간격 (px)", 8, 30, 17, 1)
+                entry_gap_px = setting_widget(st.slider,"entry_gap","엔트리 간격 (px)",8,30,step=1)
             st.caption("일간은 2단 본문만 조절합니다. 주간·월간은 용지 좌우 여백과 사건 간격을 조절합니다.")
             st.subheader("🔍 PDF 미리보기")
             date_key = "v981_preview_"+mode+layout

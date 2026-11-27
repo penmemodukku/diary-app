@@ -1,4 +1,4 @@
-# V98.5.1 — 주간·월간 용지 방향 및 선택 색상 개선
+# V98.5.2 — 주간·월간 용지 방향 및 선택 색상 개선
 # V98.5 — 월간·연간 복수 선택
 # V98.4.3 — 주간 미리보기 및 선택 디자인 개선
 # V98.4.1 — 주차 선택 개선
@@ -650,7 +650,105 @@ def create_full_pdf(daily_data, cal_legend_info, ordered_ids, side_margin_cm=2.4
 def week_start(d):
     return d - timedelta(days=(d.weekday()+1)%7)
 
-def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, entry_gap_px, include_empty, font_scale, layout):
+def create_calendar_flow_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, entry_gap_px, include_empty, font_scale, layout):
+    from html import escape
+    import calendar, re
+    fc=FontConfiguration()
+    monthly=layout.startswith('월간'); portrait='세로' in layout
+    full='전체출력' in layout; adaptive='균등높이' not in layout
+    footer='하단없음' not in layout
+    width=((210 if portrait else 297)-20*side_margin_cm)/7
+    budget=(297 if portrait else 210)-24-17
+    base=(7.5 if portrait else 8)*font_scale
+    gap=max(1,min(2,entry_gap_px/15))
+    days=['일','월','화','수','목','금','토']
+    def css(sz,g):
+        return f'body{{margin:0;font-family:NanumGothic,sans-serif;font-size:{sz}pt;line-height:1.22}} .ev{{border-left:1.2pt solid;padding-left:.7mm;margin-bottom:{g}mm;overflow-wrap:anywhere;word-break:break-all;font-weight:bold}}'
+    def event(e):
+        c=str(e.get('real_color','#555555'))
+        if not re.fullmatch(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?',c): c='#555555'
+        t=str(e.get('summary') or '(제목 없음)'); span=allday_span(e)
+        if span: t+=' ('+span_label(*span)+')'
+        return f'<div class="ev" style="color:{c};border-color:{c}">{escape(t)}</div>'
+    def measure(items,sz,g):
+        if not items:return []
+        doc=HTML(string='<meta charset="utf-8">'+''.join(items)).render(stylesheets=[CSS(string=f'@page{{size:{width-2.6}mm 10000mm;margin:0}}'+css(sz,g),font_config=fc)],font_config=fc)
+        return [(b.height+b.margin_top+b.margin_bottom)*25.4/96 for p in doc.pages for b in p._page_box.descendants() if type(b).__name__=='BlockBox' and b.element is not None and b.element.get('class')=='ev']
+    def entries(row,month=None):
+        result=[]
+        for d in row:
+            v=daily_data.get(d,{'allday':[],'timed':[]}) if month is None or d.month==month else {'allday':[],'timed':[]}
+            result.append([event(e) for e in v['allday']+v['timed']])
+        return result
+    def chunks(items,sz,g,limit):
+        hs=measure(items,sz,g); out=[]; cur=[]; used=0
+        for item,h in zip(items,hs):
+            if h>limit: raise ValueError('한 사건 제목이 페이지 높이를 초과합니다. 글자 크기를 줄여 주세요.')
+            if cur and used+h>limit: out.append(cur); cur=[]; used=0
+            cur.append(item); used+=h
+        if cur:out.append(cur)
+        return out or [[]]
+    def row_html(row,cols,h,head=True,bottom=False,more=None,month=None):
+        labels=[(str(d.day) if month is not None else f'{d.month}/{d.day} ({days[i]})') if month is None or d.month==month else '' for i,d in enumerate(row)]
+        heads='<tr>'+''.join('<th>'+x+'</th>' for x in labels)+'</tr>'
+        cells=[]
+        for i,items in enumerate(cols):
+            marker='<div class="next">— 다음 페이지로 —</div>' if more and more[i] else ''
+            cells.append(f'<td><div class="cell" style="height:{h}mm"><div>'+''.join(items)+'</div>'+marker+'</div></td>')
+        return (heads if head else '')+'<tr>'+''.join(cells)+'</tr>'+(heads if bottom else '')
+    def emit(out,title,body,sz,g):
+        styles=f'@page{{size:A4 {"portrait" if portrait else "landscape"};margin:12mm {side_margin_cm}cm}} h1{{font-size:16pt;margin:0 0 3mm;border-bottom:1pt solid #63473c;padding-bottom:2mm}} table{{width:100%;table-layout:fixed;border-collapse:collapse}} th,td{{border:.6pt solid #bdb6ad;vertical-align:top;padding:0 1mm}} th{{height:5mm;background:#f1eee8;font-size:8pt;font-weight:normal}} .cell{{position:relative;padding-top:1mm;box-sizing:border-box}} .next{{position:absolute;bottom:1mm;left:0;right:0;border-top:1pt solid #444;font-size:6.5pt;font-weight:bold;text-align:center;color:#333}}'+css(sz,g)
+        pdf=HTML(string='<meta charset="utf-8"><h1>'+escape(title)+'</h1><table>'+body+'</table>').write_pdf(stylesheets=[CSS(string=styles,font_config=fc)],font_config=fc)
+        with fitz.open(stream=pdf,filetype='pdf') as doc:
+            if len(doc)!=1:raise RuntimeError('달력 페이지 배치 초과')
+            out.insert_pdf(doc)
+    with fitz.open() as out:
+        if not monthly:
+            for w in sorted({week_start(d) for d in daily_data}):
+                row=[w+timedelta(days=i) for i in range(7)]; es=entries(row); h=budget-16
+                parts=[chunks(x,base,gap,h-9) for x in es]; n=max(map(len,parts))
+                for j in range(n):
+                    cols=[x[j] if j<len(x) else [] for x in parts]; more=[j+1<len(x) for x in parts]
+                    title=f'{w:%Y.%m.%d} — {row[-1]:%Y.%m.%d}'+(f' ({j+1}/{n})' if n>1 else '')
+                    emit(out,title,row_html(row,cols,h,j==0,footer,more),base,gap)
+        else:
+            first=min(daily_data).replace(day=1); rows=calendar.Calendar(firstweekday=6).monthdatescalendar(first.year,first.month); es=[entries(r,first.month) for r in rows]
+            avail=budget-8; sz=base; g=gap
+            def needs():return [max([sum(measure(x,sz,g)) for x in cols]+[0])+3 for cols in es]
+            ns=needs()
+            if not full:
+                for sz,g in [(base,gap),(base,.6),(base*.95,.6),(base*.9,.6),(base*.85,.6)]:
+                    ns=needs(); minimum=[max(12,n) for n in ns]
+                    if (sum(minimum) if adaptive else max(minimum)*len(rows))+6*len(rows)<=avail:break
+                else:
+                    # Retain the established priority/omission engine as a last resort.
+                    return create_weekly_pdf_legacy(daily_data,legend,ids,side_margin_cm,column_gap_cm,entry_gap_px,include_empty,font_scale,layout)
+                hs=minimum if adaptive else [max(minimum)]*len(rows); extra=(avail-6*len(rows)-sum(hs))/len(rows); hs=[h+extra for h in hs]
+                groups=[[(r,c,h) for r,c,h in zip(rows,es,hs)]]
+            else:
+                groups=[]; group=[]; used=0
+                for r,c,n in zip(rows,es,ns):
+                    h=max(15,n) if adaptive else max(15,n,(avail-6*len(rows))/len(rows))
+                    if h+6>avail:
+                        if group:groups.append(group);group=[];used=0
+                        parts=[chunks(x,sz,g,avail-16) for x in c]
+                        for j in range(max(map(len,parts))):groups.append([(r,[x[j] if j<len(x) else [] for x in parts],avail-7)])
+                        continue
+                    if group and used+h+6>avail:groups.append(group);group=[];used=0
+                    group.append((r,c,h));used+=h+6
+                if group:groups.append(group)
+            for j,group in enumerate(groups):
+                body='<tr>'+''.join('<th>'+d+'</th>' for d in days)+'</tr>'+''.join(row_html(r,c,h,month=first.month) for r,c,h in group)
+                emit(out,f'{first.year}년 {first.month}월'+(f' ({j+1}/{len(groups)})' if len(groups)>1 else ''),body,sz,g)
+        return out.tobytes(garbage=3,deflate=True)
+
+def create_weekly_pdf(*args):
+    layout=args[-1]
+    if layout.startswith('월간') or '전체출력' in layout:
+        return create_calendar_flow_pdf(*args)
+    return create_weekly_pdf_legacy(*args)
+
+def create_weekly_pdf_legacy(daily_data, legend, ids, side_margin_cm, column_gap_cm, entry_gap_px, include_empty, font_scale, layout):
     from html import escape
     import re
     days = ['일','월','화','수','목','금','토']
@@ -752,7 +850,7 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
         else:
             pages=[(f'{w:%Y.%m.%d} — {w+timedelta(days=6):%Y.%m.%d}',[[w+timedelta(days=i) for i in range(7)]]) for w in sorted({week_start(d) for d in daily_data})]
         for title, rows in pages:
-            height=((257 if portrait else 170) - 2.22*len(rows))/len(rows) if monthly else (244 if portrait else 157)/len(rows)
+            height=((257 if portrait else 170) - 2.22*len(rows))/len(rows) if monthly else ((244 if portrait else 157)-(6 if "하단없음" not in layout else 0))/len(rows)
             body='<table>'
             if monthly: body+='<tr>'+''.join('<th>'+h+'</th>' for h in days)+'</tr>'
             for row in rows:
@@ -796,6 +894,7 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
                     content,size,gap=fit_column(es,reserved+ (4 if monthly else 0)) if active else ('',8*font_scale,1)
                     cells.append(f'<td class="daybody" style="height:{max(1,height-reserved-(5 if monthly else 0))}mm;background:{"#fff" if active else "#f7f6f4"}"><div style="font-size:{size}pt;--gap:{gap}mm">{content}</div></td>')
                 body+='<tr>'+''.join(cells)+'</tr>'
+                if not monthly and '하단없음' not in layout: body+='<tr>'+''.join('<th class="dayhead">'+h+'</th>' for h in heads)+'</tr>'
             body+='</table>'
             css=f"""@page {{size:A4 {"portrait" if portrait else "landscape"};margin:{10 if monthly else 12}mm {side_margin_cm}cm;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;}} th {{background:#f1eee8;font-weight:normal;}} td {{height:{height}mm;}} .event {{margin-bottom:var(--gap);}}"""+style(8*font_scale,0)+'.event {margin-bottom:var(--gap);} .date-label {font-size:8pt;height:4mm;color:#555;} '
             css += '.dayhead{font-size:8pt;padding:.5mm 1mm;height:3mm}.spanrow td{height:4.5mm;padding:0 .5mm;border-top:0;border-bottom:0}.spanbar{box-sizing:border-box;height:4mm;line-height:3.5mm;font-size:7pt;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-left:1.5pt solid;background:#f1eee8;padding:0 1mm}.spanhidden{height:4mm;padding:0;font-size:6pt;color:#777;text-align:center}.daybody{border-top:0}'
@@ -1176,7 +1275,7 @@ if service:
         include_empty=True
         if kind=='월간':
             layout='월간 한 장'
-            st.caption(f'선택한 {len(selected_weeks)}개월 · A4 {len(selected_weeks)}장')
+            st.caption(f'선택한 {len(selected_weeks)}개월')
         else:
             pages=st.radio('페이지 구성',['한 장','두 장'],horizontal=True,key='annual_pages_'+mode)
             columns=st.radio('사건 배치',['한 열','두 열'],index=1,horizontal=True,key='annual_cols_'+mode)
@@ -1241,7 +1340,7 @@ if service:
         b.button('이번 달',key=prefix_week+'today',on_click=lambda: st.session_state.update({month_key:today.replace(day=1)}))
         c.button('선택 해제',key=prefix_week+'clear',on_click=lambda: st.session_state.update({selection_key:set()}))
         selected_weeks=tuple(sorted(w for w in st.session_state[selection_key] if allowed_week(w)))
-        st.caption(f'선택한 {len(selected_weeks)}주 · A4 {len(selected_weeks)}장')
+        st.caption(f'선택한 {len(selected_weeks)}주')
         for w in selected_weeks:
             label,remove=st.columns([5,1])
             label.write(f'{w:%Y.%m.%d} ~ {w+timedelta(days=6):%Y.%m.%d}')
@@ -1253,6 +1352,13 @@ if service:
     if layout.startswith(('주간','월간')):
         direction=st.radio('용지 방향',['가로','세로'],horizontal=True,key='paper_direction_'+mode+layout.split()[0])
         layout += ' '+direction
+        kind=layout.split()[0]
+        output=st.radio('출력 방식',['모든 기록 출력','한 페이지에 맞추기'] if kind=='주간' else ['한 페이지에 맞추기','모든 기록 출력'],key='flow_'+mode+kind)
+        layout += ' 전체출력' if output=='모든 기록 출력' else ' 한장맞춤'
+        if kind=='월간':
+            layout += ' 균등높이' if st.radio('주별 높이',['자동 배분','균등 배치'],horizontal=True,key='height_'+mode)=='균등 배치' else ' 자동높이'
+        else:
+            if not st.checkbox('하단 날짜·요일 표시',value=True,key='footer_'+mode):layout+=' 하단없음'
 
     if layout == '일간' and (end_d - start_d).days > 100:
         st.warning("⚠️ 기간이 100일을 넘으면 서버 메모리 부족이 발생할 수 있습니다.")
@@ -1309,7 +1415,7 @@ if service:
         if cached["start"] != start_d or cached["end"] != end_d:
             st.warning("선택한 날짜가 불러온 일기의 기간과 다릅니다. 새 기간을 적용하려면 다시 불러오세요.")
         st.subheader("인쇄 설정")
-        st.caption("선택한 하루 또는 한 주의 실제 PDF를 미리 봅니다. 주간·월간은 한 페이지, 연간은 한 장 또는 두 장으로 표시합니다.")
+        st.caption("선택한 하루 또는 한 주의 실제 PDF를 미리 봅니다. 주간·월간은 출력 방식에 따라 페이지가 확장됩니다.")
         print_data = {d: v for d, v in cached["data"].items() if include_empty or v["allday"] or v["timed"]}
         if not print_data:
             st.info("인쇄할 기록이 없습니다. 빈 날짜 인쇄를 선택하세요.")
@@ -1375,7 +1481,7 @@ if service:
                 try:
                     with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
                         page_count = len(doc)
-                        if layout.startswith("주간") or layout.startswith("월간"):
+                        if layout.startswith(("주간","월간")) and page_count == 1:
                             st.session_state["preview_page"] = 1
                             st.caption(f"{day_keys.index(selected_day)+1} / {len(day_keys)}" + ("주 · 한 주당 한 페이지" if layout.startswith("주간") else "개월 · 한 달당 한 페이지"))
                         else:
@@ -1386,9 +1492,9 @@ if service:
                             def shift_page(delta, count):
                                 st.session_state["preview_page"] = max(1,min(count,st.session_state["preview_page"]+delta))
                             with previous:
-                                st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1, on_click=shift_page,args=(-1,page_count),key="preview_page_prev")
+                                st.button("◀ 이전 페이지", disabled=st.session_state["preview_page"] <= 1, on_click=shift_page,args=(-1,page_count),key="preview_page_prev")
                             with following:
-                                st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count, on_click=shift_page,args=(1,page_count),key="preview_page_next")
+                                st.button("다음 페이지 ▶", disabled=st.session_state["preview_page"] >= page_count, on_click=shift_page,args=(1,page_count),key="preview_page_next")
                             with counter:
                                 st.markdown(f"**{st.session_state['preview_page']} / {page_count} 페이지**")
                         page = doc.load_page(st.session_state["preview_page"] - 1)

@@ -1,4 +1,4 @@
-# V98.4.2 — 달력 기반 복수 주차 선택
+# V98.4.3 — 주간 미리보기 및 선택 디자인 개선
 # V98.4.1 — 주차 선택 개선
 # V98.3.4 — 인쇄 날짜 기준 시간 표기 개선
 # V98.3.2 — 일간 종일 일정 및 미리보기 개선
@@ -54,6 +54,17 @@ st.markdown("""
         background-color: #FF2B2B;
         color: white;
     }
+    [class*="st-key-weekpick_"] button {
+        border-radius: 50% !important; width: 2.5rem !important; min-width: 0 !important;
+        height: 2.5rem !important; padding: 0 !important; margin: auto;
+        border: 2px solid #A49C8C !important; background: transparent !important;
+    }
+    [class*="st-key-weekpick_"] button[kind="primary"] {
+        background: #FF4B4B !important; border-color: #FF4B4B !important;
+    }
+    [class*="st-key-weekpick_"] button[kind="primary"] p { color: white !important; }
+    [class*="st-key-weekday_"] button { border-radius: 6px !important; }
+    [class*="st-key-weekday_"] button[kind="primary"] { background: #FCE4DA !important; border: 1px solid #E6B9AC !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -1153,8 +1164,8 @@ if service:
             w=row[0]; checked=w in st.session_state[selection_key]; valid=allowed_week(w)
             cells=st.columns(8)
             for i,c in enumerate(cells):
-                label=('●' if checked else '○') if i==0 else str(row[i-1].day)
-                c.button(label,key=prefix_week+str(w)+'_'+str(i),disabled=not valid,on_click=toggle_week,args=(w,),type='primary' if checked else 'secondary',use_container_width=True,help=f'{w:%Y.%m.%d} ~ {row[-1]:%Y.%m.%d}')
+                label=('✓' if checked else '○') if i==0 else str(row[i-1].day)
+                c.button(label,key=('weekpick_' if i==0 else 'weekday_')+prefix_week+str(w)+'_'+str(i),disabled=not valid,on_click=toggle_week,args=(w,),type='primary' if checked else 'secondary',use_container_width=True,help=f'{w:%Y.%m.%d} ~ {row[-1]:%Y.%m.%d}')
         a,b,c=st.columns(3)
         a.button('이달 전체 선택',key=prefix_week+'all',on_click=select_month,args=([r[0] for r in rows if allowed_week(r[0])],))
         b.button('이번 달',key=prefix_week+'today',on_click=lambda: st.session_state.update({month_key:today.replace(day=1)}))
@@ -1250,12 +1261,12 @@ if service:
                 idx = day_keys.index(st.session_state[date_key])
                 st.session_state[date_key] = day_keys[max(0,min(len(day_keys)-1,idx+delta))]
                 st.session_state["preview_page"] = 1
-            if layout == "일간":
+            if layout in ("일간", "주간"):
                 left, middle, right = st.columns([1,3,1])
                 with left:
-                    st.button("◀ 전날", disabled=st.session_state[date_key]==day_keys[0], on_click=shift_preview_day,args=(-1,))
+                    st.button("◀ 이전 주" if layout=="주간" else "◀ 전날", disabled=st.session_state[date_key]==day_keys[0], on_click=shift_preview_day,args=(-1,))
                 with right:
-                    st.button("다음 날 ▶", disabled=st.session_state[date_key]==day_keys[-1], on_click=shift_preview_day,args=(1,))
+                    st.button("다음 주 ▶" if layout=="주간" else "다음 날 ▶", disabled=st.session_state[date_key]==day_keys[-1], on_click=shift_preview_day,args=(1,))
             else:
                 middle = st.container()
             with middle:
@@ -1289,18 +1300,22 @@ if service:
                 try:
                     with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
                         page_count = len(doc)
-                        st.caption(f"선택 기간: {page_count}페이지" + (" (다년간)" if layout.startswith("다년간") else " (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (연간)" if layout.startswith("연간") else " (월간)" if layout.startswith("월간") else " (한 주당 한 페이지)"))
-                        if st.session_state["preview_page"] > page_count:
-                            st.session_state["preview_page"] = page_count
-                        previous, counter, following = st.columns([1, 2, 1])
-                        def shift_page(delta, count):
-                            st.session_state["preview_page"] = max(1,min(count,st.session_state["preview_page"]+delta))
-                        with previous:
-                            st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1, on_click=shift_page,args=(-1,page_count))
-                        with following:
-                            st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count, on_click=shift_page,args=(1,page_count))
-                        with counter:
-                            st.markdown(f"**{st.session_state['preview_page']} / {page_count} 페이지**")
+                        if layout == "주간":
+                            st.session_state["preview_page"] = 1
+                            st.caption(f"{day_keys.index(selected_day)+1} / {len(day_keys)}주 · 한 주당 한 페이지")
+                        else:
+                            st.caption(f"선택 기간: {page_count}페이지" + (" (다년간)" if layout.startswith("다년간") else " (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (연간)" if layout.startswith("연간") else " (월간)" if layout.startswith("월간") else " (한 주당 한 페이지)"))
+                            if st.session_state["preview_page"] > page_count:
+                                st.session_state["preview_page"] = page_count
+                            previous, counter, following = st.columns([1, 2, 1])
+                            def shift_page(delta, count):
+                                st.session_state["preview_page"] = max(1,min(count,st.session_state["preview_page"]+delta))
+                            with previous:
+                                st.button("◀ 이전", disabled=st.session_state["preview_page"] <= 1, on_click=shift_page,args=(-1,page_count))
+                            with following:
+                                st.button("다음 ▶", disabled=st.session_state["preview_page"] >= page_count, on_click=shift_page,args=(1,page_count))
+                            with counter:
+                                st.markdown(f"**{st.session_state['preview_page']} / {page_count} 페이지**")
                         page = doc.load_page(st.session_state["preview_page"] - 1)
                         pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
                         st.image(pix.tobytes("png"), use_container_width=True)

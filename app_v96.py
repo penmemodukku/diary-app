@@ -1,3 +1,4 @@
+# V98.5.1 — 주간·월간 용지 방향 및 선택 색상 개선
 # V98.5 — 월간·연간 복수 선택
 # V98.4.3 — 주간 미리보기 및 선택 디자인 개선
 # V98.4.1 — 주차 선택 개선
@@ -66,6 +67,9 @@ st.markdown("""
     [class*="st-key-weekpick_"] button[kind="primary"] p { color: white !important; }
     [class*="st-key-weekday_"] button { border-radius: 6px !important; }
     [class*="st-key-weekday_"] button[kind="primary"] { background: #FCE4DA !important; border: 1px solid #E6B9AC !important; }
+    [class*="st-key-periodpick_"] button[kind="secondary"] {background:#FAF9EE !important;border:1px solid #CECBC1 !important;}
+    [class*="st-key-periodpick_"] button[kind="primary"] {background:#FCE4DA !important;border:1px solid #D97969 !important;}
+    [class*="st-key-periodpick_"] button:disabled {opacity:.45;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -652,7 +656,8 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
     days = ['일','월','화','수','목','금','토']
     # Measure each column using the same renderer and font as the final PDF.
     fc = FontConfiguration()
-    width = (297 - 20 * side_margin_cm) / 7
+    portrait = "세로" in layout
+    width = ((210 if portrait else 297) - 20 * side_margin_cm) / 7
     monthly = layout.startswith("월간")
     height = 157
     def event_html(e, title):
@@ -664,14 +669,14 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
     def fit_column(es, reserved=0):
         import unicodedata
         titles = [' '.join(str(e.get('summary') or '(제목 없음)').split()) for e in es]
-        size = 8 * font_scale
+        size = (7.5 if portrait else 8) * font_scale
         gap = max(1, min(2, entry_gap_px / 15))
         if not titles: return '', size, gap
         limit = (height - reserved - (7 if monthly else 3)) * 96 / 25.4
         def important(e):
             name = e.get('calendar_name') or legend.get(e.get('calendar_id'), {}).get('name', '')
             name = unicodedata.normalize('NFKC', str(name)).replace(' ', '')
-            return '긍정' in name or '부정' in name
+            return '긍정' in name or '부정' in name or '올해의사건' in name
         def content(indices, ts):
             kept = set(indices); parts = []; missing = False
             for i in range(len(es)):
@@ -710,17 +715,27 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
             return [cut(i,n) for i,n in enumerate(lo)]
         indices=list(range(len(es)))
         full=content(indices,titles)
-        for g in dict.fromkeys([gap,1]):
-            if measure(full,size,g)<=limit: return full,size,g
-        gap=1
         floor=max(min(size,6.5),size*.85)
-        for sz in dict.fromkeys([size,max(floor,size*.95),max(floor,size*.90),floor]):
-            ts=two_lines(sz); html=content(indices,ts)
+        sizes=list(dict.fromkeys([size,max(floor,size*.95),max(floor,size*.90),floor]))
+        for g in dict.fromkeys([gap,1,.6]):
+            if measure(full,size,g)<=limit: return full,size,g
+        gap=.6
+        for sz in sizes[1:]:
+            if measure(full,sz,gap)<=limit: return full,sz,gap
+        sz=floor
+        short=two_lines(sz)
+        ts=[titles[i] if important(e) else short[i] for i,e in enumerate(es)]
+        html=content(indices,ts)
+        if measure(html,sz,gap)<=limit: return html,sz,gap
+        for i in reversed(range(len(es))):
+            if important(es[i]): continue
+            indices.remove(i)
+            html=content(indices,ts)
             if measure(html,sz,gap)<=limit: return html,sz,gap
-        # Keep chronological order. Remove ordinary events from the end first;
-        # a marker preserves each omitted run before a retained event.
-        priority=[i for i in reversed(indices) if not important(es[i])]+[i for i in reversed(indices) if important(es[i])]
-        for i in priority:
+        ts=short
+        html=content(indices,ts)
+        if measure(html,sz,gap)<=limit: return html,sz,gap
+        for i in reversed(indices.copy()):
             indices.remove(i)
             html=content(indices,ts)
             if measure(html,sz,gap)<=limit: return html,sz,gap
@@ -737,7 +752,7 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
         else:
             pages=[(f'{w:%Y.%m.%d} — {w+timedelta(days=6):%Y.%m.%d}',[[w+timedelta(days=i) for i in range(7)]]) for w in sorted({week_start(d) for d in daily_data})]
         for title, rows in pages:
-            height=(170 - 2.22*len(rows))/len(rows) if monthly else 157/len(rows)
+            height=((257 if portrait else 170) - 2.22*len(rows))/len(rows) if monthly else (244 if portrait else 157)/len(rows)
             body='<table>'
             if monthly: body+='<tr>'+''.join('<th>'+h+'</th>' for h in days)+'</tr>'
             for row in rows:
@@ -782,7 +797,7 @@ def create_weekly_pdf(daily_data, legend, ids, side_margin_cm, column_gap_cm, en
                     cells.append(f'<td class="daybody" style="height:{max(1,height-reserved-(5 if monthly else 0))}mm;background:{"#fff" if active else "#f7f6f4"}"><div style="font-size:{size}pt;--gap:{gap}mm">{content}</div></td>')
                 body+='<tr>'+''.join(cells)+'</tr>'
             body+='</table>'
-            css=f"""@page {{size:A4 landscape;margin:{10 if monthly else 12}mm {side_margin_cm}cm;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;}} th {{background:#f1eee8;font-weight:normal;}} td {{height:{height}mm;}} .event {{margin-bottom:var(--gap);}}"""+style(8*font_scale,0)+'.event {margin-bottom:var(--gap);} .date-label {font-size:8pt;height:4mm;color:#555;} '
+            css=f"""@page {{size:A4 {"portrait" if portrait else "landscape"};margin:{10 if monthly else 12}mm {side_margin_cm}cm;}} h1 {{font-size:16pt;border-bottom:1pt solid #63473c;padding-bottom:2mm;margin:0 0 3mm;}} table {{width:100%;table-layout:fixed;border-collapse:collapse;}} th,td {{border:.6pt solid #bdb6ad;vertical-align:top;padding:1mm;}} th {{background:#f1eee8;font-weight:normal;}} td {{height:{height}mm;}} .event {{margin-bottom:var(--gap);}}"""+style(8*font_scale,0)+'.event {margin-bottom:var(--gap);} .date-label {font-size:8pt;height:4mm;color:#555;} '
             css += '.dayhead{font-size:8pt;padding:.5mm 1mm;height:3mm}.spanrow td{height:4.5mm;padding:0 .5mm;border-top:0;border-bottom:0}.spanbar{box-sizing:border-box;height:4mm;line-height:3.5mm;font-size:7pt;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-left:1.5pt solid;background:#f1eee8;padding:0 1mm}.spanhidden{height:4mm;padding:0;font-size:6pt;color:#777;text-align:center}.daybody{border-top:0}'
             pdf=HTML(string='<meta charset="utf-8"><body><h1>'+title+'</h1>'+body+'</body>').write_pdf(stylesheets=[CSS(string=css,font_config=fc)],font_config=fc)
             with fitz.open(stream=pdf,filetype='pdf') as doc:
@@ -1029,7 +1044,7 @@ def render_period_picker(kind, mode, today, planner):
         for col,d in zip(st.columns(width),ds[i:i+width]):
             checked=d in st.session_state[sk]
             label=('✓  ' if checked else '○  ')+(f'{d.month}월' if kind=='월간' else f'{d.year}년')
-            col.button(label,key=prefix+str(d),type='primary' if checked else 'secondary',disabled=not allowed(d),on_click=toggle,args=(d,),use_container_width=True)
+            col.button(label,key="periodpick_"+prefix+str(d),type='primary' if checked else 'secondary',disabled=not allowed(d),on_click=toggle,args=(d,),use_container_width=True)
     a,b,c=st.columns(3)
     a.button('전체 선택',key=prefix+'all',on_click=select_all,args=([d for d in ds if allowed(d)],))
     b.button('올해',key=prefix+'today',on_click=lambda:st.session_state.update({nk:today.year if kind=='월간' else today.year//10*10}))
@@ -1138,7 +1153,7 @@ if service:
     def default_selected(name):
         if planner or layout not in ('월간','연간','다년간'): return True
         if layout in ('연간','다년간') and any('올해의 사건' in n for n in catalog.values()): return '올해의 사건' in name
-        return '긍정' in name or '부정' in name or not any('긍정' in n or '부정' in n for n in catalog.values())
+        return '긍정' in name or '부정' in name or '올해의사건' in name or not any('긍정' in n or '부정' in n for n in catalog.values())
     with st.sidebar:
         st.subheader('인쇄할 캘린더')
         if st.button('캘린더 목록 새로고침'):
@@ -1235,6 +1250,10 @@ if service:
         end_d=selected_weeks[-1]+timedelta(days=6) if selected_weeks else today
         include_empty=True
 
+    if layout.startswith(('주간','월간')):
+        direction=st.radio('용지 방향',['가로','세로'],horizontal=True,key='paper_direction_'+mode+layout.split()[0])
+        layout += ' '+direction
+
     if layout == '일간' and (end_d - start_d).days > 100:
         st.warning("⚠️ 기간이 100일을 넘으면 서버 메모리 부족이 발생할 수 있습니다.")
 
@@ -1303,7 +1322,7 @@ if service:
             st.caption("상세 기록 또는 주간 사건 제목에 적용됩니다. 날짜 머리글은 고정됩니다.")
             setting_cols = st.columns(3)
             with setting_cols[0]:
-                side_margin_cm = st.slider("본문 좌우 여백 (cm)", 0.8, 3.5, 1.0, 0.1, key="v9821_month_margin_"+mode+layout.split()[0]) if layout.startswith(("월간","연간","다년간")) else st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
+                side_margin_cm = st.slider("본문 좌우 여백 (cm)", 0.8, 3.5, 1.0, 0.1, key="v9821_month_margin_"+mode+layout.split()[0]) if layout.startswith(("월간","연간","다년간")) or (layout.startswith("주간") and "세로" in layout) else st.slider("본문 좌우 여백 (cm)", 1.5, 3.5, 2.4, 0.1)
             with setting_cols[1]:
                 column_gap_cm = st.slider("2단 사이 간격 (cm)", 0.5, 1.5, 0.85, 0.05, disabled=layout!="일간")
             with setting_cols[2]:
@@ -1356,9 +1375,9 @@ if service:
                 try:
                     with fitz.open(stream=preview_bytes, filetype="pdf") as doc:
                         page_count = len(doc)
-                        if layout == "주간" or layout.startswith("월간"):
+                        if layout.startswith("주간") or layout.startswith("월간"):
                             st.session_state["preview_page"] = 1
-                            st.caption(f"{day_keys.index(selected_day)+1} / {len(day_keys)}" + ("주 · 한 주당 한 페이지" if layout=="주간" else "개월 · 한 달당 한 페이지"))
+                            st.caption(f"{day_keys.index(selected_day)+1} / {len(day_keys)}" + ("주 · 한 주당 한 페이지" if layout.startswith("주간") else "개월 · 한 달당 한 페이지"))
                         else:
                             st.caption(f"선택 기간: {page_count}페이지" + (" (다년간)" if layout.startswith("다년간") else " (첫 페이지는 시간표, 이후는 본문)" if layout=="일간" else " (연간)" if layout.startswith("연간") else " (월간)" if layout.startswith("월간") else " (한 주당 한 페이지)"))
                             if st.session_state["preview_page"] > page_count:

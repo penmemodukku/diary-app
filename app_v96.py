@@ -1,4 +1,4 @@
-# V98.5.2 — 주간·월간 용지 방향 및 선택 색상 개선
+# V98.5.3 — 주간·월간 용지 방향 및 선택 색상 개선
 # V98.5 — 월간·연간 복수 선택
 # V98.4.3 — 주간 미리보기 및 선택 디자인 개선
 # V98.4.1 — 주차 선택 개선
@@ -688,16 +688,17 @@ def create_calendar_flow_pdf(daily_data, legend, ids, side_margin_cm, column_gap
             cur.append(item); used+=h
         if cur:out.append(cur)
         return out or [[]]
-    def row_html(row,cols,h,head=True,bottom=False,more=None,month=None):
+    def row_html(row,cols,h,head=True,bottom=False,more=None,month=None,continued=None):
         labels=[(str(d.day) if month is not None else f'{d.month}/{d.day} ({days[i]})') if month is None or d.month==month else '' for i,d in enumerate(row)]
         heads='<tr>'+''.join('<th>'+x+'</th>' for x in labels)+'</tr>'
         cells=[]
         for i,items in enumerate(cols):
             marker='<div class="next">— 다음 페이지로 —</div>' if more and more[i] else ''
-            cells.append(f'<td><div class="cell" style="height:{h}mm"><div>'+''.join(items)+'</div>'+marker+'</div></td>')
+            prefix='<div class="prev">— 이어서 —</div>' if continued and continued[i] else ''
+            cells.append(f'<td><div class="cell" style="height:{h}mm"><div>'+prefix+''.join(items)+'</div>'+marker+'</div></td>')
         return (heads if head else '')+'<tr>'+''.join(cells)+'</tr>'+(heads if bottom else '')
     def emit(out,title,body,sz,g):
-        styles=f'@page{{size:A4 {"portrait" if portrait else "landscape"};margin:12mm {side_margin_cm}cm}} h1{{font-size:16pt;margin:0 0 3mm;border-bottom:1pt solid #63473c;padding-bottom:2mm}} table{{width:100%;table-layout:fixed;border-collapse:collapse}} th,td{{border:.6pt solid #bdb6ad;vertical-align:top;padding:0 1mm}} th{{height:5mm;background:#f1eee8;font-size:8pt;font-weight:normal}} .cell{{position:relative;padding-top:1mm;box-sizing:border-box}} .next{{position:absolute;bottom:1mm;left:0;right:0;border-top:1pt solid #444;font-size:6.5pt;font-weight:bold;text-align:center;color:#333}}'+css(sz,g)
+        styles=f'@page{{size:A4 {"portrait" if portrait else "landscape"};margin:12mm {side_margin_cm}cm}} h1{{font-size:16pt;margin:0 0 3mm;border-bottom:1pt solid #63473c;padding-bottom:2mm}} table{{width:100%;table-layout:fixed;border-collapse:collapse}} th,td{{border:.6pt solid #bdb6ad;vertical-align:top;padding:0 1mm}} th{{height:5mm;background:#f1eee8;font-size:8pt;font-weight:normal}} .cell{{position:relative;padding-top:1mm;box-sizing:border-box}} .next{{position:absolute;bottom:1mm;left:0;right:0;border-top:1pt solid #444;font-size:6.5pt;font-weight:bold;text-align:center;color:#333}}.prev{{border-bottom:1pt solid #444;font-size:6.5pt;font-weight:bold;text-align:center;color:#333;margin-bottom:1mm}}'+css(sz,g)
         pdf=HTML(string='<meta charset="utf-8"><h1>'+escape(title)+'</h1><table>'+body+'</table>').write_pdf(stylesheets=[CSS(string=styles,font_config=fc)],font_config=fc)
         with fitz.open(stream=pdf,filetype='pdf') as doc:
             if len(doc)!=1:raise RuntimeError('달력 페이지 배치 초과')
@@ -706,11 +707,11 @@ def create_calendar_flow_pdf(daily_data, legend, ids, side_margin_cm, column_gap
         if not monthly:
             for w in sorted({week_start(d) for d in daily_data}):
                 row=[w+timedelta(days=i) for i in range(7)]; es=entries(row); h=budget-16
-                parts=[chunks(x,base,gap,h-9) for x in es]; n=max(map(len,parts))
+                parts=[chunks(x,base,gap,h-15) for x in es]; n=max(map(len,parts))
                 for j in range(n):
                     cols=[x[j] if j<len(x) else [] for x in parts]; more=[j+1<len(x) for x in parts]
                     title=f'{w:%Y.%m.%d} — {row[-1]:%Y.%m.%d}'+(f' ({j+1}/{n})' if n>1 else '')
-                    emit(out,title,row_html(row,cols,h,j==0,footer,more),base,gap)
+                    emit(out,title,row_html(row,cols,h,j==0,footer,more,continued=[j>0 and j<len(x) for x in parts]),base,gap)
         else:
             first=min(daily_data).replace(day=1); rows=calendar.Calendar(firstweekday=6).monthdatescalendar(first.year,first.month); es=[entries(r,first.month) for r in rows]
             avail=budget-8; sz=base; g=gap
@@ -727,18 +728,49 @@ def create_calendar_flow_pdf(daily_data, legend, ids, side_margin_cm, column_gap
                 groups=[[(r,c,h) for r,c,h in zip(rows,es,hs)]]
             else:
                 groups=[]; group=[]; used=0
-                for r,c,n in zip(rows,es,ns):
-                    h=max(15,n) if adaptive else max(15,n,(avail-6*len(rows))/len(rows))
-                    if h+6>avail:
-                        if group:groups.append(group);group=[];used=0
-                        parts=[chunks(x,sz,g,avail-16) for x in c]
-                        for j in range(max(map(len,parts))):groups.append([(r,[x[j] if j<len(x) else [] for x in parts],avail-7)])
-                        continue
-                    if group and used+h+6>avail:groups.append(group);group=[];used=0
-                    group.append((r,c,h));used+=h+6
-                if group:groups.append(group)
+                baseline=(avail-6*len(rows))/len(rows)
+                if sum(max(12,n) for n in ns)+6*len(rows)<=avail:
+                    # Same full-page allocation as compact mode, without shrinking text.
+                    low=12 if adaptive else max(ns+[12])
+                    hs=[max(low,n) for n in ns]
+                    if sum(hs)+6*len(rows)<=avail:
+                        extra=(avail-6*len(rows)-sum(hs))/len(rows)
+                        groups=[[(r,c,h+extra,None,None) for r,c,h in zip(rows,es,hs)]]
+                if not groups:
+                    for r,c in zip(rows,es):
+                        pending=[list(x) for x in c]; heights=[measure(x,sz,g) for x in c]; continued=[False]*7
+                        while True:
+                            room=avail-used-6
+                            need=max([sum(x) for x in heights]+[0])+3+(6 if any(continued) else 0)
+                            target=max(baseline,need)
+                            if room>=target:
+                                group.append((r,pending,target,None,continued));used+=target+6;break
+                            # Start the next week in remaining space if useful, reserving markers.
+                            if room<max(18,baseline*.35):
+                                if group:groups.append(group);group=[];used=0;continue
+                            limit=room-10-(6 if any(continued) else 0)
+                            counts=[]
+                            for hh in heights:
+                                total=0;k=0
+                                for v in hh:
+                                    if total+v>limit:break
+                                    total+=v;k+=1
+                                counts.append(k)
+                            if not any(counts):
+                                if group:groups.append(group);group=[];used=0;continue
+                                raise ValueError('한 사건 제목이 페이지 높이를 초과합니다. 글자 크기를 줄여 주세요.')
+                            cols=[x[:k] for x,k in zip(pending,counts)]
+                            pending=[x[k:] for x,k in zip(pending,counts)];heights=[x[k:] for x,k in zip(heights,counts)]
+                            more=[bool(x) for x in pending]
+                            group.append((r,cols,room,more,continued));groups.append(group);group=[];used=0
+                            if not any(more):break
+                            continued=more
+                    if group:groups.append(group)
             for j,group in enumerate(groups):
-                body='<tr>'+''.join('<th>'+d+'</th>' for d in days)+'</tr>'+''.join(row_html(r,c,h,month=first.month) for r,c,h in group)
+                body='<tr>'+''.join('<th>'+d+'</th>' for d in days)+'</tr>'
+                for item in group:
+                    r,c,h=item[:3];more,continued=item[3:] if len(item)>3 else (None,None)
+                    body+=row_html(r,c,h,month=first.month,more=more,continued=continued)
                 emit(out,f'{first.year}년 {first.month}월'+(f' ({j+1}/{len(groups)})' if len(groups)>1 else ''),body,sz,g)
         return out.tobytes(garbage=3,deflate=True)
 

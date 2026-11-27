@@ -1,3 +1,4 @@
+# V98.4.2 — 달력 기반 복수 주차 선택
 # V98.4.1 — 주차 선택 개선
 # V98.3.4 — 인쇄 날짜 기준 시간 표기 개선
 # V98.3.2 — 일간 종일 일정 및 미리보기 개선
@@ -1077,6 +1078,7 @@ if service:
             del st.session_state[catalog_key]; st.rerun()
         final_ids=[cid for cid,name in catalog.items() if st.checkbox(name,value=default_selected(name),key='v982_cal_'+mode+layout+cid)]
         st.caption('현재는 서비스 계정에 공유된 캘린더만 표시됩니다. 누락된 캘린더는 ID를 추가하세요.')
+    selected_weeks = None
     if layout=='일간':
         col1,col2=st.columns(2)
         with col1:
@@ -1112,54 +1114,65 @@ if service:
         layout='다년간 '+pages+' '+columns+' '+heights
         st.caption(f'총 {last-first+1}년 · 주요 사건 캘린더를 권장합니다.')
     else:
-        years=list(range(today.year,2101)) if planner else list(range(today.year,1899,-1))
-        year_key='v9841_year_'+mode
-        week_key='v9841_week_'+mode
-        def available_weeks(y):
-            first=week_start(date(y,1,1)); last=week_start(date(y,12,31))
-            return [w for i in range((last-first).days//7+1)
-                    for w in [first+timedelta(days=7*i)]
-                    if (w+timedelta(days=6)>=today if planner else w<=today)]
-        def change_week_year():
-            y=st.session_state[year_key]
-            ws=available_weeks(y)
-            st.session_state[week_key]=week_start(today) if week_start(today) in ws else (ws[0] if planner else ws[-1])
-        def move_week(delta):
-            target=st.session_state[week_key]+timedelta(days=7*delta)
-            y=st.session_state[year_key]
-            candidates=[y,target.year,(target+timedelta(days=6)).year]
-            for candidate in candidates:
-                if candidate in years and target in available_weeks(candidate):
-                    st.session_state[year_key]=candidate
-                    st.session_state[week_key]=target
-                    return
-        def current_week():
-            st.session_state[year_key]=today.year
-            st.session_state[week_key]=week_start(today)
-        year=st.selectbox('연도',years,key=year_key,on_change=change_week_year)
-        first=week_start(date(year,1,1))
-        weeks=available_weeks(year)
-        if st.session_state.get(week_key) not in weeks:
-            st.session_state[week_key]=week_start(today) if week_start(today) in weeks else (weeks[0] if planner else weeks[-1])
-        selected=st.session_state[week_key]
-        def can_move(delta):
-            target=selected+timedelta(days=7*delta)
-            return any(y in years and target in available_weeks(y) for y in {year,target.year,(target+timedelta(days=6)).year})
-        prev_col,week_col,next_col=st.columns([1,4,1])
-        with prev_col:
-            st.button('← 전주',key='v9841_prev_'+mode,on_click=move_week,args=(-1,),disabled=not can_move(-1))
-        with week_col:
-            start_d=st.selectbox('주차',list(reversed(weeks)),format_func=lambda w:f'{(w-first).days//7+1}주차 · {w:%m/%d} ~ {w+timedelta(days=6):%m/%d}',key=week_key)
-        with next_col:
-            st.button('다음 주 →',key='v9841_next_'+mode,on_click=move_week,args=(1,),disabled=not can_move(1))
-        st.button('이번 주로 이동',key='v9841_today_'+mode,on_click=current_week)
-        end_d=start_d+timedelta(days=6); include_empty=True
-        st.caption('일요일~토요일 7일 고정 · 오늘이 포함된 주는 일기와 플래너 모두 선택 가능')
+        import calendar
+        prefix_week = 'v9842_'+mode+'_'
+        selection_key = prefix_week+'selected'
+        month_key = prefix_week+'month'
+        if selection_key not in st.session_state:
+            st.session_state[selection_key] = {week_start(today)}
+        if month_key not in st.session_state:
+            st.session_state[month_key] = today.replace(day=1)
+        def allowed_week(w):
+            return date(1900,1,1) <= w+timedelta(days=6) and w <= date(2100,12,31) and (w+timedelta(days=6)>=today if planner else w<=today)
+        def move_month(delta):
+            m=st.session_state[month_key]
+            n=m.year*12+m.month-1+delta
+            st.session_state[month_key]=date(n//12,n%12+1,1)
+        def toggle_week(w):
+            chosen=set(st.session_state[selection_key])
+            if w in chosen: chosen.remove(w)
+            elif allowed_week(w): chosen.add(w)
+            st.session_state[selection_key]=chosen
+        def select_month(ws):
+            st.session_state[selection_key]=set(st.session_state[selection_key]) | set(ws)
+        m=st.session_state[month_key]
+        lo=today.replace(day=1) if planner else date(1900,1,1)
+        hi=date(2100,12,1) if planner else today.replace(day=1)
+        if not lo<=m<=hi:
+            m=today.replace(day=1); st.session_state[month_key]=m
+        st.caption('인쇄할 주의 왼쪽 원 또는 날짜 행을 선택하세요. 여러 달의 선택도 유지됩니다.')
+        c1,c2,c3=st.columns([1,4,1])
+        c1.button('◀',key=prefix_week+'prev',on_click=move_month,args=(-1,),disabled=m<=lo,use_container_width=True)
+        c2.markdown(f'<div style="text-align:center;font-size:1.25rem;font-weight:bold">{m.year}년 {m.month}월</div>',unsafe_allow_html=True)
+        c3.button('▶',key=prefix_week+'next',on_click=move_month,args=(1,),disabled=m>=hi,use_container_width=True)
+        rows=calendar.Calendar(firstweekday=6).monthdatescalendar(m.year,m.month)
+        header=st.columns(8)
+        for c,label in zip(header,['선택','일','월','화','수','목','금','토']):
+            c.markdown(f'<div style="text-align:center">{label}</div>',unsafe_allow_html=True)
+        for row in rows:
+            w=row[0]; checked=w in st.session_state[selection_key]; valid=allowed_week(w)
+            cells=st.columns(8)
+            for i,c in enumerate(cells):
+                label=('●' if checked else '○') if i==0 else str(row[i-1].day)
+                c.button(label,key=prefix_week+str(w)+'_'+str(i),disabled=not valid,on_click=toggle_week,args=(w,),type='primary' if checked else 'secondary',use_container_width=True,help=f'{w:%Y.%m.%d} ~ {row[-1]:%Y.%m.%d}')
+        a,b,c=st.columns(3)
+        a.button('이달 전체 선택',key=prefix_week+'all',on_click=select_month,args=([r[0] for r in rows if allowed_week(r[0])],))
+        b.button('이번 달',key=prefix_week+'today',on_click=lambda: st.session_state.update({month_key:today.replace(day=1)}))
+        c.button('선택 해제',key=prefix_week+'clear',on_click=lambda: st.session_state.update({selection_key:set()}))
+        selected_weeks=tuple(sorted(w for w in st.session_state[selection_key] if allowed_week(w)))
+        st.caption(f'선택한 {len(selected_weeks)}주 · A4 {len(selected_weeks)}장')
+        for w in selected_weeks:
+            label,remove=st.columns([5,1])
+            label.write(f'{w:%Y.%m.%d} ~ {w+timedelta(days=6):%Y.%m.%d}')
+            remove.button('×',key=prefix_week+'remove_'+str(w),on_click=toggle_week,args=(w,))
+        start_d=selected_weeks[0] if selected_weeks else today
+        end_d=selected_weeks[-1]+timedelta(days=6) if selected_weeks else today
+        include_empty=True
 
     if layout == '일간' and (end_d - start_d).days > 100:
         st.warning("⚠️ 기간이 100일을 넘으면 서버 메모리 부족이 발생할 수 있습니다.")
 
-    if st.button(f"📅 캘린더 {mode} 불러오기", type="primary"):
+    if st.button(f"📅 캘린더 {mode} 불러오기", type="primary", disabled=selected_weeks == ()):
         for key in ("pdf_data", "cached_diary", "preview_pdf", "preview_key", "full_pdf_key"):
             st.session_state[key] = None
         if not final_ids:
@@ -1168,9 +1181,18 @@ if service:
             st.error("날짜 선택이 잘못되었습니다.")
         else:
             with st.spinner("캘린더에서 일기를 불러오는 중입니다..."):
-                daily_data, cal_legend_info, logs = get_events_from_ids(
-                    service, final_ids, custom_colors, start_d, end_d
-                )
+                if selected_weeks is None:
+                    daily_data, cal_legend_info, logs = get_events_from_ids(service, final_ids, custom_colors, start_d, end_d)
+                else:
+                    daily_data, cal_legend_info, logs = {}, {}, []
+                    groups=[]
+                    for w in selected_weeks:
+                        if groups and w == groups[-1][1]+timedelta(days=1):
+                            groups[-1]=(groups[-1][0],w+timedelta(days=6))
+                        else: groups.append((w,w+timedelta(days=6)))
+                    for a,b in groups:
+                        data, legend, messages=get_events_from_ids(service,final_ids,custom_colors,a,b)
+                        daily_data.update(data); cal_legend_info.update(legend); logs.extend(messages)
             total_count = sum(len(v["allday"]) + len(v["timed"]) for v in daily_data.values())
             with st.expander("🔎 처리 결과 로그"):
                 for log in logs:
@@ -1185,7 +1207,7 @@ if service:
                 st.session_state["cached_diary"] = {
                     "data": daily_data, "legend": cal_legend_info,
                     "ids": final_ids, "start": start_d, "end": end_d,
-                    "count": total_count, "manual": manual,
+                    "count": total_count, "manual": manual, "weeks": selected_weeks,
                 }
                 st.session_state["preview_key"] = None
                 st.session_state["preview_pdf"] = None
@@ -1195,9 +1217,9 @@ if service:
                 st.success(f"총 {total_count}개 기록을 불러왔습니다. 이제 여백을 조절해 보세요.")
 
     cached = st.session_state["cached_diary"]
-    if cached and (cached["start"] != start_d or cached["end"] != end_d or cached["ids"] != final_ids or cached.get("manual") != manual):
+    if cached and (cached["start"] != start_d or cached["end"] != end_d or cached["ids"] != final_ids or cached.get("manual") != manual or cached.get("weeks") != selected_weeks):
         st.info("날짜 또는 캘린더 선택이 변경되었습니다. 다시 불러오세요.")
-    if cached and cached["start"] == start_d and cached["end"] == end_d and cached["ids"] == final_ids and cached.get("manual") == manual:
+    if cached and cached["start"] == start_d and cached["end"] == end_d and cached["ids"] == final_ids and cached.get("manual") == manual and cached.get("weeks") == selected_weeks and selected_weeks != ():
         if cached["start"] != start_d or cached["end"] != end_d:
             st.warning("선택한 날짜가 불러온 일기의 기간과 다릅니다. 새 기간을 적용하려면 다시 불러오세요.")
         st.subheader("인쇄 설정")
